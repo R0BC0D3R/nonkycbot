@@ -210,6 +210,8 @@ def validate_grid_config(config: dict[str, Any]) -> None:
 
     # Order size
     validate_positive_decimal(config, "base_order_size", required=True)
+    if "order_size_jitter_pct" in config:
+        validate_non_negative_decimal(config, "order_size_jitter_pct", required=False)
 
     # Fee rate
     validate_non_negative_decimal(config, "total_fee_rate", required=False)

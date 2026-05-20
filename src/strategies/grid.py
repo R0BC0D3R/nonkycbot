@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -49,6 +50,7 @@ class LadderGridConfig:
     reconcile_interval_sec: float = 60.0
     balance_refresh_sec: float = 60.0
     mode: str = "live"  # "live", "dry-run", or "monitor"
+    order_size_jitter_pct: Decimal = Decimal("0")
 
 
 @dataclass
@@ -176,7 +178,7 @@ class LadderGridStrategy:
         )
 
         for side, price in buy_levels + sell_levels:
-            self._place_order(side, price, self.config.base_order_size)
+            self._place_order(side, price, self._jittered_size())
 
         orders_placed = len(self.state.open_orders)
         total_levels = len(buy_levels) + len(sell_levels)
@@ -350,13 +352,13 @@ class LadderGridStrategy:
                 mid_price, "buy", self.config.n_buy_levels - buys
             )
             for side, price in levels:
-                self._place_order(side, price, self.config.base_order_size)
+                self._place_order(side, price, self._jittered_size())
         if sells < self.config.n_sell_levels:
             levels = self._build_levels(
                 mid_price, "sell", self.config.n_sell_levels - sells
             )
             for side, price in levels:
-                self._place_order(side, price, self.config.base_order_size)
+                self._place_order(side, price, self._jittered_size())
 
     def _handle_profit_store_exit(self, now: float) -> None:
         if self._exit_triggered:
@@ -557,6 +559,13 @@ class LadderGridStrategy:
         normalized = status.status.lower()
         if normalized != "filled":
             self.client.cancel_order(order_id)
+
+    def _jittered_size(self) -> Decimal:
+        jitter = self.config.order_size_jitter_pct
+        if jitter <= 0:
+            return self.config.base_order_size
+        factor = Decimal(str(1 + random.uniform(-float(jitter), float(jitter))))
+        return self.config.base_order_size * factor
 
     def _place_order(
         self,

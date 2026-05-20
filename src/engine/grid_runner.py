@@ -81,6 +81,7 @@ def build_strategy(config: dict, state_path: Path) -> LadderGridStrategy:
         reconcile_interval_sec=float(normalized.get("reconcile_interval_sec", 60)),
         balance_refresh_sec=float(normalized.get("balance_refresh_sec", 60)),
         mode=normalized.get("mode", "live"),
+        order_size_jitter_pct=Decimal(str(normalized.get("order_size_jitter_pct", "0"))),
     )
     exchange = build_exchange_client(normalized)
     profit_store = build_profit_store(normalized, exchange, ladder_config.mode)
