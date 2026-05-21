@@ -316,8 +316,8 @@ class XnvMarketMakerStrategy:
     def poll_once(self) -> None:
         now = time.time()
         self._refresh_balances(now)
-        # Sync order statuses every 2 minutes to avoid excessive API calls
-        if now - self._last_sync_ts >= 120.0:
+        # Sync order statuses every 30s using list_open_orders comparison
+        if now - self._last_sync_ts >= 30.0:
             self._sync_all_order_statuses()
             self._last_sync_ts = now
 
@@ -395,6 +395,12 @@ class XnvMarketMakerStrategy:
         now: float,
     ) -> None:
         mid = (best_bid + best_ask) / Decimal("2")
+
+        # Clamp offset so it can never push L0 prices outside the valid maker range.
+        # Without this, a large trend + inventory skew combination can push desired
+        # sell L0 below best_bid (or buy L0 above best_ask), causing endless cancel/replace.
+        max_offset = mid * self.config.level_0_offset_pct * Decimal("0.9")
+        center_offset = max(min(center_offset, max_offset), -max_offset)
 
         desired = self._compute_desired_levels(pair, best_bid, best_ask, center_offset)
         existing = self.state.open_orders.get(pair, {})
@@ -538,6 +544,9 @@ class XnvMarketMakerStrategy:
                 LOGGER.error("[%s] Place %s L%d failed: %s", pair, side, level, exc)
             return
 
+        # Subtract a small random age so not all orders placed at the same time
+        # expire simultaneously, spreading out age-based reprices.
+        stagger = random.uniform(0, 30.0)
         self.state.open_orders.setdefault(pair, {}).setdefault(side, {})[
             level
         ] = LevelOrder(
@@ -545,7 +554,7 @@ class XnvMarketMakerStrategy:
             price=price,
             quantity=qty,
             client_id=client_id,
-            created_at=time.time(),
+            created_at=time.time() - stagger,
         )
         LOGGER.info(
             "[%s] Placed %s L%d %s qty=%s @ %s", pair, side, level, order_id, qty, price
@@ -564,7 +573,10 @@ class XnvMarketMakerStrategy:
             self.client.cancel_order(order_id)
             LOGGER.info("[%s] Cancelled %s L%d %s", pair, side, level, order_id)
         except RestError as exc:
-            if "not found" not in str(exc).lower():
+            if "not found" in str(exc).lower():
+                # Order already gone — likely filled before we could cancel
+                self._log_fill_status(pair, side, level, order_id, "cancel-race")
+            else:
                 LOGGER.error("[%s] Cancel %s failed: %s", pair, order_id, exc)
         self.state.open_orders.get(pair, {}).get(side, {}).pop(level, None)
 
@@ -944,32 +956,48 @@ class XnvMarketMakerStrategy:
         except RestError as exc:
             LOGGER.warning("Balance refresh failed: %s", exc)
 
-    def _sync_all_order_statuses(self) -> None:
-        to_remove: list[tuple[str, str, int, OrderStatusView]] = []
-        for pair, sides in self.state.open_orders.items():
-            for side, levels in sides.items():
-                for k, order in levels.items():
-                    try:
-                        status = self.client.get_order(order.order_id)
-                        if _is_final(status):
-                            to_remove.append((pair, side, k, status))
-                    except RestError as exc:
-                        LOGGER.debug("Status check %s: %s", order.order_id, exc)
-        for pair, side, k, status in to_remove:
-            order = self.state.open_orders.get(pair, {}).get(side, {}).pop(k, None)
-            if order is not None:
-                filled = status.filled_qty
-                avg = status.avg_price
-                fill_info = (
-                    f"filled={filled} avg={avg}" if filled is not None and avg is not None
-                    else f"filled={filled}" if filled is not None
-                    else ""
-                )
+    def _log_fill_status(
+        self, pair: str, side: str, level: int, order_id: str, context: str = ""
+    ) -> None:
+        """Fetch and log the fill status of an order that has left the book."""
+        try:
+            status = self.client.get_order(order_id)
+            filled = status.filled_qty
+            avg = status.avg_price
+            if filled is not None and filled > Decimal("0"):
                 LOGGER.info(
-                    "[%s] %s L%d %s — %s %s",
-                    pair, side.upper(), k, status.status.upper(),
-                    order.order_id, fill_info,
+                    "[%s] %s L%d FILLED%s: filled=%s avg=%s id=%s",
+                    pair, side.upper(), level,
+                    f" ({context})" if context else "",
+                    filled, avg, order_id,
                 )
+            else:
+                LOGGER.info(
+                    "[%s] %s L%d %s%s: id=%s",
+                    pair, side.upper(), level,
+                    status.status.upper() if status.status else "GONE",
+                    f" ({context})" if context else "",
+                    order_id,
+                )
+        except RestError as exc:
+            LOGGER.debug("Fill check %s: %s", order_id, exc)
+
+    def _sync_all_order_statuses(self) -> None:
+        """Compare tracked orders against live open orders; log and remove any that filled or disappeared."""
+        for pair in (self.config.symbol_usdt, self.config.symbol_xmr):
+            try:
+                live_ids = {o.order_id for o in self.client.list_open_orders(pair)}
+            except RestError as exc:
+                LOGGER.warning("list_open_orders %s: %s", pair, exc)
+                continue
+            to_remove: list[tuple[str, int]] = []
+            for side, levels in self.state.open_orders.get(pair, {}).items():
+                for k, order in list(levels.items()):
+                    if order.order_id not in live_ids:
+                        to_remove.append((side, k))
+                        self._log_fill_status(pair, side, k, order.order_id)
+            for side, k in to_remove:
+                self.state.open_orders.get(pair, {}).get(side, {}).pop(k, None)
 
 
 # ── Module-level helpers ────────────────────────────────────────────────────
