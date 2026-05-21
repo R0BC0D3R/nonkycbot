@@ -46,7 +46,7 @@ def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
         # Ladder
         base_order_size=Decimal(str(config.get("base_order_size", "10"))),
         num_levels=int(config.get("num_levels", 5)),
-        level_0_inside_pct=Decimal(str(config.get("level_0_inside_pct", "0.10"))),
+        level_0_offset_pct=Decimal(str(config.get("level_0_offset_pct", "0.003"))),
         level_spacing_pct=Decimal(str(config.get("level_spacing_pct", "0.50"))),
         size_step_factor=Decimal(str(config.get("size_step_factor", "0.5"))),
         ladder_reprice_threshold_pct=Decimal(
@@ -93,6 +93,7 @@ def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
 def run_xnv_mm(config: dict, state_path: Path) -> None:
     strategy = build_strategy(config, state_path)
     strategy.load_state()
+    strategy.cancel_all_on_startup()
     strategy.seed_price_history()
 
     print(

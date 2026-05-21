@@ -47,8 +47,8 @@ class XnvMarketMakerConfig:
     # Ladder
     base_order_size: Decimal
     num_levels: int
-    level_0_inside_pct: Decimal
-    level_spacing_pct: Decimal
+    level_0_offset_pct: Decimal  # Distance of L0 from mid as fraction of mid
+    level_spacing_pct: Decimal   # Additional distance per level as fraction of mid
     size_step_factor: Decimal
     ladder_reprice_threshold_pct: Decimal
     max_order_age_sec: float
@@ -286,6 +286,21 @@ class XnvMarketMakerStrategy:
             except Exception as exc:
                 LOGGER.warning("Could not anchor price history: %s", exc)
 
+    # ── Startup ────────────────────────────────────────────────────────────
+
+    def cancel_all_on_startup(self) -> None:
+        """Cancel all open orders on both pairs and clear tracked state."""
+        if self.config.mode in {"monitor", "dry-run"}:
+            LOGGER.info("DRY-RUN: skipping startup cancel_all")
+            return
+        for symbol in (self.config.symbol_usdt, self.config.symbol_xmr):
+            try:
+                ok = self.client.cancel_all(symbol)
+                LOGGER.info("Startup cancel_all %s: %s", symbol, "OK" if ok else "no confirmation")
+            except Exception as exc:
+                LOGGER.warning("Startup cancel_all %s failed: %s", symbol, exc)
+        self.state.open_orders.clear()
+
     # ── Main loop ──────────────────────────────────────────────────────────
 
     def poll_once(self) -> None:
@@ -332,19 +347,18 @@ class XnvMarketMakerStrategy:
         score = self._compute_trend_score(now)
         self._update_trend_state(score)
 
-        usdt_spread = usdt_ask - usdt_bid
-        xmr_spread = xmr_ask - xmr_bid
-
         if not arb_fired and self.state.trend_state != TrendState.NEUTRAL:
             self._maybe_place_taker_bite(usdt_bid, usdt_ask, now)
 
         # Priority 3: ladder maintenance
-        usdt_offset = self._inventory_skew(
-            self.config.symbol_usdt, usdt_mid, usdt_spread
-        ) + self._trend_offset(usdt_spread)
-        xmr_offset = self._inventory_skew(
-            self.config.symbol_xmr, xmr_mid, xmr_spread
-        ) + self._trend_offset(xmr_spread)
+        usdt_offset = (
+            self._inventory_skew(self.config.symbol_usdt, usdt_mid)
+            + self._trend_offset(usdt_mid)
+        )
+        xmr_offset = (
+            self._inventory_skew(self.config.symbol_xmr, xmr_mid)
+            + self._trend_offset(xmr_mid)
+        )
 
         self._run_ladder(
             self.config.symbol_usdt, usdt_bid, usdt_ask, usdt_offset, now
@@ -416,14 +430,13 @@ class XnvMarketMakerStrategy:
         result: dict[tuple[str, int], tuple[Decimal, Decimal]] = {}
 
         for k in range(self.config.num_levels):
-            # Level 0 is inside_pct from best bid/ask.
-            # Each deeper level is spacing_pct * spread further from mid.
-            # Formula:
-            #   buy_k  = best_bid + (inside_pct - k * spacing_pct) * spread + offset
-            #   sell_k = best_ask - (inside_pct - k * spacing_pct) * spread + offset
-            multiplier = self.config.level_0_inside_pct - k * self.config.level_spacing_pct
-            buy_raw = best_bid + multiplier * spread + center_offset
-            sell_raw = best_ask - multiplier * spread + center_offset
+            # Fixed % of mid per level — independent of current spread width.
+            # offset_k is the total distance from mid as a fraction of mid.
+            #   buy_k  = mid * (1 - offset_k) + center_offset
+            #   sell_k = mid * (1 + offset_k) + center_offset
+            offset_k = self.config.level_0_offset_pct + k * self.config.level_spacing_pct
+            buy_raw = mid * (Decimal("1") - offset_k) + center_offset
+            sell_raw = mid * (Decimal("1") + offset_k) + center_offset
 
             qty = self.config.base_order_size * (
                 Decimal("1") + k * self.config.size_step_factor
@@ -601,11 +614,11 @@ class XnvMarketMakerStrategy:
                 self.state.trend_exposure_xnv = Decimal("0")
                 LOGGER.info("Trend DOWN→NEUTRAL  score=%s", score)
 
-    def _trend_offset(self, spread: Decimal) -> Decimal:
+    def _trend_offset(self, mid: Decimal) -> Decimal:
         if self.state.trend_state == TrendState.NEUTRAL:
             return Decimal("0")
         sign = Decimal("1") if self.state.trend_state == TrendState.UP else Decimal("-1")
-        return sign * self.config.ladder_shift_pct * spread
+        return sign * self.config.ladder_shift_pct * mid
 
     def _maybe_place_taker_bite(
         self,
@@ -848,10 +861,8 @@ class XnvMarketMakerStrategy:
 
     # ── Inventory skew ─────────────────────────────────────────────────────
 
-    def _inventory_skew(
-        self, pair: str, mid: Decimal, spread: Decimal
-    ) -> Decimal:
-        if not self._balances or spread <= 0:
+    def _inventory_skew(self, pair: str, mid: Decimal) -> Decimal:
+        if not self._balances or mid <= 0:
             return Decimal("0")
 
         xnv_bal = self._balances.get("XNV", (Decimal("0"), Decimal("0")))[0]
@@ -881,7 +892,7 @@ class XnvMarketMakerStrategy:
             return Decimal("0")
 
         factor = max(min(diff / tol, Decimal("1")), Decimal("-1"))
-        return spread * self.config.inventory_skew_pct * factor
+        return mid * self.config.inventory_skew_pct * factor
 
     # ── Helpers ────────────────────────────────────────────────────────────
 

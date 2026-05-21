@@ -31,8 +31,10 @@ pairs:
 # ── Ladder ────────────────────────────────────────────────────────────────
 base_order_size: "50"          # XNV per level-0 order (USDT pair)
 num_levels: 5
-level_0_inside_pct: "0.10"    # Level 0 is 10% of spread inside best bid/ask
-level_spacing_pct:  "0.50"    # Each deeper level is 0.5x spread further from mid
+level_0_offset_pct: "0.003"   # L0 distance from mid = 0.3% of mid price
+level_spacing_pct:  "0.012"   # Each deeper level adds 1.2% of mid (~22 ticks apart)
+                               #   @ 0.1823: L0=±0.0005, L1=±0.0027, L2=±0.0049,
+                               #             L3=±0.0071, L4=±0.0093
 size_step_factor:   "0.5"     # Level k size = base * (1 + k * 0.5)
                                #   L0=1.0x  L1=1.5x  L2=2.0x  L3=2.5x  L4=3.0x
 xmr_qty_fraction:   "0.60"    # XNV_XMR orders = 60% of USDT order size
@@ -46,12 +48,12 @@ inventory_target:
   USDT: "0.30"
   XMR:  "0.10"
 inventory_tolerance_pct: "0.05"   # Start skewing when off-target by 5%
-inventory_skew_pct:       "0.20"  # Shift ladder center by up to 20% of spread
+inventory_skew_pct:       "0.003" # Shift ladder center by up to 0.3% of mid
 
 # ── Trend overlay ─────────────────────────────────────────────────────────
 trend_threshold:  "0.003"    # 0.3% weighted move triggers directional bias
 trend_deadzone:   "0.001"    # Signal must drop below 0.1% to return to neutral
-ladder_shift_pct: "0.30"     # Shift ladder center by 30% of spread when trending
+ladder_shift_pct: "0.004"    # Shift ladder center by 0.4% of mid when trending
 
 # Taker bites on XNV_USDT only
 taker_bite_size_factor:  "0.30"  # 0.3x base_order_size per bite
