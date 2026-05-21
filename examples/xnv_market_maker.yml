@@ -29,12 +29,14 @@ pairs:
     min_notional: "0.000001"
 
 # ── Ladder ────────────────────────────────────────────────────────────────
-base_order_size: "10"          # XNV per level-0 order
+base_order_size: "50"          # XNV per level-0 order (USDT pair)
 num_levels: 5
 level_0_inside_pct: "0.10"    # Level 0 is 10% of spread inside best bid/ask
 level_spacing_pct:  "0.50"    # Each deeper level is 0.5x spread further from mid
 size_step_factor:   "0.5"     # Level k size = base * (1 + k * 0.5)
                                #   L0=1.0x  L1=1.5x  L2=2.0x  L3=2.5x  L4=3.0x
+xmr_qty_fraction:   "0.60"    # XNV_XMR orders = 60% of USDT order size
+order_size_jitter_pct: "0.07" # ±7% random per-order size variation
 ladder_reprice_threshold_pct: "0.002"   # Rebuild if mid moves 0.2%
 max_order_age_sec: 120
 

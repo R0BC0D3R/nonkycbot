@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import statistics
 import time
 import uuid
@@ -64,6 +65,8 @@ class XnvMarketMakerConfig:
     taker_bite_size_factor: Decimal
     taker_bite_interval_sec: float
     taker_max_exposure: Decimal  # Multiples of base_order_size
+    xmr_qty_fraction: Decimal  # XNV_XMR order size as fraction of USDT size
+    order_size_jitter_pct: Decimal  # ±fraction applied to each order qty
     # Arb
     arb_z_threshold: Decimal
     arb_min_profit_pct: Decimal
@@ -425,7 +428,13 @@ class XnvMarketMakerStrategy:
             qty = self.config.base_order_size * (
                 Decimal("1") + k * self.config.size_step_factor
             )
-            qty = _quantize_qty(qty, pair_cfg.step_size)
+            if pair == self.config.symbol_xmr:
+                qty *= self.config.xmr_qty_fraction
+            jitter = Decimal(str(random.uniform(
+                float(1 - self.config.order_size_jitter_pct),
+                float(1 + self.config.order_size_jitter_pct),
+            )))
+            qty = _quantize_qty(qty * jitter, pair_cfg.step_size)
             if qty <= 0:
                 continue
 

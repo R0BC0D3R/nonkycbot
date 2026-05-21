@@ -70,6 +70,8 @@ def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
         ),
         taker_bite_interval_sec=float(config.get("taker_bite_interval_sec", 300)),
         taker_max_exposure=Decimal(str(config.get("taker_max_exposure", "5.0"))),
+        xmr_qty_fraction=Decimal(str(config.get("xmr_qty_fraction", "0.60"))),
+        order_size_jitter_pct=Decimal(str(config.get("order_size_jitter_pct", "0.07"))),
         # Arb
         arb_z_threshold=Decimal(str(config.get("arb_z_threshold", "2.0"))),
         arb_min_profit_pct=Decimal(str(config.get("arb_min_profit_pct", "0.002"))),
