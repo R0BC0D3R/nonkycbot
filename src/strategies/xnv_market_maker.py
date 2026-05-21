@@ -123,6 +123,7 @@ class XnvMarketMakerState:
     trend_exposure_xnv: Decimal = field(default_factory=lambda: Decimal("0"))
     last_bite_ts: float = 0.0
     last_bite_order_id: str | None = None
+    last_bite_side: str | None = None
     price_history: list[PricePoint] = field(default_factory=list)
     ratio_history: list[PricePoint] = field(default_factory=list)
     arb_last_executed_ts: float = 0.0
@@ -190,6 +191,7 @@ class XnvMarketMakerStrategy:
             trend_exposure_xnv=Decimal(str(raw.get("trend_exposure_xnv", "0"))),
             last_bite_ts=float(raw.get("last_bite_ts", 0.0)),
             last_bite_order_id=raw.get("last_bite_order_id"),
+            last_bite_side=raw.get("last_bite_side"),
             price_history=[
                 PricePoint(ts=float(p["ts"]), value=Decimal(p["value"]))
                 for p in raw.get("price_history", [])
@@ -227,6 +229,7 @@ class XnvMarketMakerStrategy:
             "trend_exposure_xnv": str(self.state.trend_exposure_xnv),
             "last_bite_ts": self.state.last_bite_ts,
             "last_bite_order_id": self.state.last_bite_order_id,
+            "last_bite_side": self.state.last_bite_side,
             "price_history": [
                 {"ts": p.ts, "value": str(p.value)} for p in self.state.price_history
             ],
@@ -644,13 +647,11 @@ class XnvMarketMakerStrategy:
         elif current == TrendState.UP:
             if score < self.config.trend_deadzone:
                 self.state.trend_state = TrendState.NEUTRAL
-                self.state.trend_exposure_xnv = Decimal("0")
-                LOGGER.info("Trend UP→NEUTRAL  score=%s", score)
+                LOGGER.info("Trend UP→NEUTRAL  score=%s  exposure=%s", score, self.state.trend_exposure_xnv)
         elif current == TrendState.DOWN:
             if score > -self.config.trend_deadzone:
                 self.state.trend_state = TrendState.NEUTRAL
-                self.state.trend_exposure_xnv = Decimal("0")
-                LOGGER.info("Trend DOWN→NEUTRAL  score=%s", score)
+                LOGGER.info("Trend DOWN→NEUTRAL  score=%s  exposure=%s", score, self.state.trend_exposure_xnv)
 
     def _trend_offset(self, mid: Decimal) -> Decimal:
         if self.state.trend_state == TrendState.NEUTRAL:
@@ -673,10 +674,13 @@ class XnvMarketMakerStrategy:
             if _is_final(prev_status):
                 filled = prev_status.filled_qty or Decimal("0")
                 if filled > 0:
-                    self.state.trend_exposure_xnv += filled
+                    if self.state.last_bite_side == "sell":
+                        self.state.trend_exposure_xnv -= filled
+                    else:
+                        self.state.trend_exposure_xnv += filled
                     LOGGER.info(
-                        "Taker bite %s confirmed filled=%s  exposure=%s",
-                        prev_id, filled, self.state.trend_exposure_xnv,
+                        "Taker bite %s (%s) confirmed filled=%s  exposure=%s",
+                        prev_id, self.state.last_bite_side, filled, self.state.trend_exposure_xnv,
                     )
                 else:
                     LOGGER.info(
@@ -684,6 +688,7 @@ class XnvMarketMakerStrategy:
                         prev_id, prev_status.status,
                     )
                 self.state.last_bite_order_id = None
+                self.state.last_bite_side = None
             else:
                 # Still open — cancel and restart cooldown.
                 LOGGER.info(
@@ -695,9 +700,12 @@ class XnvMarketMakerStrategy:
                 except RestError as cancel_exc:
                     LOGGER.warning("Bite cancel %s failed: %s", prev_id, cancel_exc)
                 self.state.last_bite_order_id = None
+                self.state.last_bite_side = None
                 self.state.last_bite_ts = now
         except RestError as exc:
             LOGGER.warning("Bite settle get_order %s failed: %s — clearing id", prev_id, exc)
+            self.state.last_bite_order_id = None
+            self.state.last_bite_side = None
 
     def _maybe_place_taker_bite(
         self,
@@ -709,8 +717,14 @@ class XnvMarketMakerStrategy:
             return
 
         max_exp = self.config.taker_max_exposure * self.config.base_order_size
-        if self.state.trend_exposure_xnv >= max_exp:
-            LOGGER.info("Taker bite skipped: max exposure %s reached", max_exp)
+        # Signed exposure: negative = net short, positive = net long.
+        # Block deepening in the current trend direction; unwinding is always allowed.
+        exp = self.state.trend_exposure_xnv
+        if self.state.trend_state == TrendState.DOWN and exp <= -max_exp:
+            LOGGER.info("Taker bite skipped: short exposure %s >= max %s", -exp, max_exp)
+            return
+        if self.state.trend_state == TrendState.UP and exp >= max_exp:
+            LOGGER.info("Taker bite skipped: long exposure %s >= max %s", exp, max_exp)
             return
 
         pair_cfg = self.config.pairs[self.config.symbol_usdt]
@@ -746,6 +760,7 @@ class XnvMarketMakerStrategy:
                 strict_validate=False,
             )
             self.state.last_bite_order_id = order_id
+            self.state.last_bite_side = side
             self.state.last_bite_ts = now
             LOGGER.info(
                 "Taker bite %s qty=%s @ %s  id=%s  exposure=%s (pending)",
@@ -1050,21 +1065,20 @@ class XnvMarketMakerStrategy:
                 self.state.open_orders.get(pair, {}).get(side, {}).pop(k, None)
 
     def _adjust_exposure_for_ladder_fill(self, side: str, filled_qty: Decimal) -> None:
-        """Reduce trend exposure when a ladder fill works against the open bite position."""
+        """Adjust signed exposure when a ladder order fills."""
         if filled_qty <= 0:
             return
-        trend = self.state.trend_state
-        # DOWN trend (sold via bites) → buy fills reduce net short
-        # UP trend (bought via bites) → sell fills reduce net long
-        if (trend == TrendState.DOWN and side == "buy") or (
-            trend == TrendState.UP and side == "sell"
-        ):
-            before = self.state.trend_exposure_xnv
-            self.state.trend_exposure_xnv = max(Decimal("0"), before - filled_qty)
-            LOGGER.info(
-                "Exposure reduced by ladder %s fill: %s → %s",
-                side, before, self.state.trend_exposure_xnv,
-            )
+        before = self.state.trend_exposure_xnv
+        # Buy fills increase exposure (less short / more long).
+        # Sell fills decrease exposure (more short / less long).
+        if side == "buy":
+            self.state.trend_exposure_xnv += filled_qty
+        else:
+            self.state.trend_exposure_xnv -= filled_qty
+        LOGGER.info(
+            "Exposure adjusted by ladder %s fill %s: %s → %s",
+            side, filled_qty, before, self.state.trend_exposure_xnv,
+        )
 
 
 # ── Module-level helpers ────────────────────────────────────────────────────
