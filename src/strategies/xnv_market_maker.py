@@ -676,18 +676,18 @@ class XnvMarketMakerStrategy:
         if current == TrendState.NEUTRAL:
             if score > self.config.trend_threshold:
                 self.state.trend_state = TrendState.UP
-                LOGGER.info("Trend NEUTRAL→UP  score=%s", score)
+                LOGGER.info("Trend NEUTRAL→UP  score=%.6f", score)
             elif score < -self.config.trend_threshold:
                 self.state.trend_state = TrendState.DOWN
-                LOGGER.info("Trend NEUTRAL→DOWN  score=%s", score)
+                LOGGER.info("Trend NEUTRAL→DOWN  score=%.6f", score)
         elif current == TrendState.UP:
             if score < self.config.trend_deadzone:
                 self.state.trend_state = TrendState.NEUTRAL
-                LOGGER.info("Trend UP→NEUTRAL  score=%s  exposure=%s", score, self.state.trend_exposure_xnv)
+                LOGGER.info("Trend UP→NEUTRAL  score=%.6f  exposure=%s", score, self.state.trend_exposure_xnv)
         elif current == TrendState.DOWN:
             if score > -self.config.trend_deadzone:
                 self.state.trend_state = TrendState.NEUTRAL
-                LOGGER.info("Trend DOWN→NEUTRAL  score=%s  exposure=%s", score, self.state.trend_exposure_xnv)
+                LOGGER.info("Trend DOWN→NEUTRAL  score=%.6f  exposure=%s", score, self.state.trend_exposure_xnv)
 
     def _trend_offset(self, mid: Decimal) -> Decimal:
         if self.state.trend_state == TrendState.NEUTRAL:
@@ -1113,11 +1113,15 @@ class XnvMarketMakerStrategy:
             return
 
         max_ts = self.state.last_trade_ts_ms
+        first = True
         for t in trades:
             ts_ms = t.get("timestamp_ms", 0)
             if ts_ms <= self.state.last_trade_ts_ms:
                 continue  # Already seen (cursor is stored as last seen + 1)
             max_ts = max(max_ts, ts_ms)
+            if first:
+                LOGGER.debug("account trade raw sample: %s", t)
+                first = False
             symbol = t.get("symbol", "?")
             side = t.get("side", "?").upper()
             price = t.get("price", "?")

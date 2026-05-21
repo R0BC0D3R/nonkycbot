@@ -101,7 +101,8 @@ def run_xnv_mm(config: dict, state_path: Path) -> None:
         f"pairs={strategy.config.symbol_usdt}+{strategy.config.symbol_xmr} "
         f"levels={strategy.config.num_levels} "
         f"poll={strategy.config.poll_interval_sec}s "
-        f"mode={strategy.config.mode}"
+        f"mode={strategy.config.mode}  "
+        f"exposure={strategy.state.trend_exposure_xnv}"
     )
 
     try:
