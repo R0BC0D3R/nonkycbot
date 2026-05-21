@@ -459,17 +459,22 @@ class XnvMarketMakerStrategy:
             buy_raw = mid * (Decimal("1") - offset_k) + center_offset
             sell_raw = mid * (Decimal("1") + offset_k) + center_offset
 
-            qty = self.config.base_order_size * (
+            base_qty = self.config.base_order_size * (
                 Decimal("1") + k * self.config.size_step_factor
             )
             if pair == self.config.symbol_xmr:
-                qty *= self.config.xmr_qty_fraction
-            jitter = Decimal(str(random.uniform(
-                float(1 - self.config.order_size_jitter_pct),
-                float(1 + self.config.order_size_jitter_pct),
-            )))
-            qty = _quantize_qty(qty * jitter, pair_cfg.step_size)
-            if qty <= 0:
+                base_qty *= self.config.xmr_qty_fraction
+
+            def _jittered(q: Decimal) -> Decimal:
+                j = Decimal(str(random.uniform(
+                    float(1 - self.config.order_size_jitter_pct),
+                    float(1 + self.config.order_size_jitter_pct),
+                )))
+                return _quantize_qty(q * j, pair_cfg.step_size)
+
+            buy_qty = _jittered(base_qty)
+            sell_qty = _jittered(base_qty)
+            if buy_qty <= 0 or sell_qty <= 0:
                 continue
 
             buy_price = _quantize_price(buy_raw, pair_cfg.tick_size, side="buy")
@@ -478,16 +483,16 @@ class XnvMarketMakerStrategy:
             if (
                 buy_price > 0
                 and buy_price < best_ask
-                and buy_price * qty >= pair_cfg.min_notional
+                and buy_price * buy_qty >= pair_cfg.min_notional
             ):
-                result[("buy", k)] = (buy_price, qty)
+                result[("buy", k)] = (buy_price, buy_qty)
 
             if (
                 sell_price > 0
                 and sell_price >= best_bid
-                and sell_price * qty >= pair_cfg.min_notional
+                and sell_price * sell_qty >= pair_cfg.min_notional
             ):
-                result[("sell", k)] = (sell_price, qty)
+                result[("sell", k)] = (sell_price, sell_qty)
 
         return result
 
