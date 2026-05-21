@@ -385,7 +385,7 @@ class XnvMarketMakerStrategy:
             current = existing.get(side, {}).get(k)
             if current is None:
                 self._place_level(pair, side, k, desired_price, desired_qty)
-            elif self._level_needs_replace(current, desired_price, desired_qty, pair, now):
+            elif self._level_needs_replace(current, desired_price, pair, now):
                 self._cancel_level(pair, side, k, current.order_id)
                 self._place_level(pair, side, k, desired_price, desired_qty)
 
@@ -461,7 +461,6 @@ class XnvMarketMakerStrategy:
         self,
         order: LevelOrder,
         desired_price: Decimal,
-        desired_qty: Decimal,
         pair: str,
         now: float,
     ) -> bool:
@@ -469,9 +468,6 @@ class XnvMarketMakerStrategy:
             return True
         tick = self.config.pairs[pair].tick_size
         if tick > 0 and abs(order.price - desired_price) >= tick:
-            return True
-        step = self.config.pairs[pair].step_size
-        if step > 0 and abs(order.quantity - desired_qty) >= step:
             return True
         return False
 
