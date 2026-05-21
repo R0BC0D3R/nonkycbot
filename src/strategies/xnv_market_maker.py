@@ -656,8 +656,12 @@ class XnvMarketMakerStrategy:
             return
 
         pair_cfg = self.config.pairs[self.config.symbol_usdt]
+        jitter = Decimal(str(random.uniform(
+            float(1 - self.config.order_size_jitter_pct),
+            float(1 + self.config.order_size_jitter_pct),
+        )))
         bite_qty = _quantize_qty(
-            self.config.taker_bite_size_factor * self.config.base_order_size,
+            self.config.taker_bite_size_factor * self.config.base_order_size * jitter,
             pair_cfg.step_size,
         )
         if bite_qty <= 0:

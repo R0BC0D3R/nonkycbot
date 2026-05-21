@@ -38,7 +38,7 @@ level_spacing_pct:  "0.015"   # Each deeper level adds 1.5% of mid (~27 ticks ap
 size_step_factor:   "0.5"     # Level k size = base * (1 + k * 0.5)
                                #   L0=1.0x  L1=1.5x  L2=2.0x  L3=2.5x  L4=3.0x
 xmr_qty_fraction:   "0.60"    # XNV_XMR orders = 60% of USDT order size
-order_size_jitter_pct: "0.07" # ±7% random per-order size variation
+order_size_jitter_pct: "0.10" # ±10% random per-order size variation
 level_reprice_threshold_pct: "0.05"     # Safety net: reprice if drift >5% from ideal. Crossing the book triggers reprice first.
 max_order_age_sec: 600
 
