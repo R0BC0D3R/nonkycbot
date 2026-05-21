@@ -171,9 +171,12 @@ class NonkycRestExchangeClient(ExchangeClient):
         return self._parse_open_orders(response, symbol)
 
     def _parse_open_orders(
-        self, response: dict[str, Any], symbol: str
+        self, response: dict[str, Any] | list, symbol: str
     ) -> list[OpenOrder]:
-        payload = response.get("data", response.get("result", response))
+        if isinstance(response, list):
+            payload = response
+        else:
+            payload = response.get("data", response.get("result", response))
         if isinstance(payload, dict):
             for key in ("orders", "openOrders", "open_orders", "data", "result"):
                 if key in payload:

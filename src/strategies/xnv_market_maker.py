@@ -146,6 +146,7 @@ class XnvMarketMakerStrategy:
         self._balances: dict[str, tuple[Decimal, Decimal]] = {}
         # (pair, side, level) -> timestamp of last insufficient-funds failure
         self._insuf_funds_ts: dict[tuple[str, str, int], float] = {}
+        self._current_mids: dict[str, Decimal] = {}
 
     # ── Persistence ────────────────────────────────────────────────────────
 
@@ -335,6 +336,8 @@ class XnvMarketMakerStrategy:
 
         usdt_mid = (usdt_bid + usdt_ask) / Decimal("2")
         xmr_mid = (xmr_bid + xmr_ask) / Decimal("2")
+        self._current_mids[self.config.symbol_usdt] = usdt_mid
+        self._current_mids[self.config.symbol_xmr] = xmr_mid
 
         self._record_price_snapshot(usdt_mid, now)
         self._record_ratio_snapshot(usdt_mid, xmr_mid, now)
@@ -869,11 +872,9 @@ class XnvMarketMakerStrategy:
         usdt_bal = self._balances.get("USDT", (Decimal("0"), Decimal("0")))[0]
         xmr_bal = self._balances.get("XMR", (Decimal("0"), Decimal("0")))[0]
 
-        usdt_mid = self._last_placed_mid.get(self.config.symbol_usdt, Decimal("0"))
-        xmr_mid_c = self._last_placed_mid.get(self.config.symbol_xmr, Decimal("0"))
+        usdt_mid = self._current_mids.get(self.config.symbol_usdt, Decimal("0"))
+        xmr_mid_c = self._current_mids.get(self.config.symbol_xmr, Decimal("0"))
 
-        if usdt_mid <= 0:
-            usdt_mid = mid if pair == self.config.symbol_usdt else Decimal("0")
         if usdt_mid <= 0:
             return Decimal("0")
 
