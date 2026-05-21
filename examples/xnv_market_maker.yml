@@ -20,12 +20,12 @@ pairs:
   XNV_USDT:
     tick_size:    "0.0001"      # bid/ask show 4 decimal places (e.g. 0.1820)
     step_size:    "0.0001"      # base_volume shows 4 decimal places
-    fee_rate:     "0.001"
+    fee_rate:     "0.002"       # 0.2% taker fee (volume tier 0, no NKYC discount)
     min_notional: "0.01"
   XNV_XMR:
     tick_size:    "0.00000001"  # XNV/XMR ≈ 0.0009 — verify from ticker/XNV_XMR
     step_size:    "0.0001"
-    fee_rate:     "0.001"
+    fee_rate:     "0.002"       # 0.2% taker fee
     min_notional: "0.0022"     # Exchange minimum ~0.002198 XMR
 
 # ── Ladder ────────────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ taker_max_exposure:      "5.0"   # Stop biting after 5x base_order_size accumula
 
 # ── Arbitrage ─────────────────────────────────────────────────────────────
 arb_z_threshold:    "2.0"    # Z-score of implied rate deviation to trigger arb
-arb_min_profit_pct: "0.002"  # 0.2% minimum net profit after fees
+arb_min_profit_pct: "0.005"  # 0.5% minimum net profit after fees (total fees = 0.4%: 0.2% × 2 legs)
 arb_max_order_size: "50"     # XNV — hard cap per arb execution
 arb_depth_pct:      "0.30"   # Cap at 30% of available depth at best bid/ask
 arb_cooldown_sec:   60       # Minimum seconds between arb executions
