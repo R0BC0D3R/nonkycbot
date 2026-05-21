@@ -319,7 +319,9 @@ class XnvMarketMakerStrategy:
     def poll_once(self) -> None:
         now = time.time()
         self._refresh_balances(now)
-        # Sync order statuses every 30s using list_open_orders comparison
+        # Settle previous bite order unconditionally (fill/cancel check)
+        self._settle_previous_bite(now)
+        # Sync ladder order statuses every 30s using list_open_orders comparison
         if now - self._last_sync_ts >= 30.0:
             self._sync_all_order_statuses()
             self._last_sync_ts = now
@@ -656,41 +658,42 @@ class XnvMarketMakerStrategy:
         sign = Decimal("1") if self.state.trend_state == TrendState.UP else Decimal("-1")
         return sign * self.config.ladder_shift_pct * mid
 
+    def _settle_previous_bite(self, now: float) -> None:
+        """Check the last bite order; credit exposure if filled, cancel if still open."""
+        if self.state.last_bite_order_id is None:
+            return
+        prev_id = self.state.last_bite_order_id
+        try:
+            prev_status = self.client.get_order(prev_id)
+            if _is_final(prev_status):
+                filled = prev_status.filled_qty or Decimal("0")
+                if filled > 0:
+                    self.state.trend_exposure_xnv += filled
+                    LOGGER.info(
+                        "Taker bite %s confirmed filled=%s  exposure=%s",
+                        prev_id, filled, self.state.trend_exposure_xnv,
+                    )
+                self.state.last_bite_order_id = None
+            else:
+                # Still open — cancel and restart cooldown.
+                LOGGER.info(
+                    "Taker bite %s unfilled — cancelling, restarting cooldown", prev_id
+                )
+                try:
+                    self.client.cancel_order(prev_id)
+                except RestError:
+                    pass
+                self.state.last_bite_order_id = None
+                self.state.last_bite_ts = now
+        except RestError:
+            self.state.last_bite_order_id = None
+
     def _maybe_place_taker_bite(
         self,
         best_bid: Decimal,
         best_ask: Decimal,
         now: float,
     ) -> None:
-        # Check previous bite: cancel if still open, credit exposure if filled.
-        if self.state.last_bite_order_id is not None:
-            prev_id = self.state.last_bite_order_id
-            try:
-                prev_status = self.client.get_order(prev_id)
-                if _is_final(prev_status):
-                    filled = prev_status.filled_qty or Decimal("0")
-                    if filled > 0:
-                        self.state.trend_exposure_xnv += filled
-                        LOGGER.info(
-                            "Taker bite %s confirmed filled=%s  exposure=%s",
-                            prev_id, filled, self.state.trend_exposure_xnv,
-                        )
-                    self.state.last_bite_order_id = None
-                else:
-                    # Still open on this tick — cancel and restart cooldown.
-                    LOGGER.info(
-                        "Taker bite %s unfilled — cancelling, restarting cooldown", prev_id
-                    )
-                    try:
-                        self.client.cancel_order(prev_id)
-                    except RestError:
-                        pass
-                    self.state.last_bite_order_id = None
-                    self.state.last_bite_ts = now
-                    return
-            except RestError:
-                self.state.last_bite_order_id = None
-
         if now - self.state.last_bite_ts < self.config.taker_bite_interval_sec:
             return
 
@@ -988,8 +991,11 @@ class XnvMarketMakerStrategy:
 
     def _log_fill_status(
         self, pair: str, side: str, level: int, order_id: str, context: str = ""
-    ) -> None:
-        """Fetch and log the fill status of an order that has left the book."""
+    ) -> Decimal:
+        """Fetch and log the fill status of an order that has left the book.
+
+        Returns the confirmed filled quantity (0 if unknown or unfilled).
+        """
         try:
             status = self.client.get_order(order_id)
             filled = status.filled_qty
@@ -1001,6 +1007,7 @@ class XnvMarketMakerStrategy:
                     f" ({context})" if context else "",
                     filled, avg, order_id,
                 )
+                return filled
             else:
                 LOGGER.info(
                     "[%s] %s L%d %s%s: id=%s",
@@ -1011,6 +1018,7 @@ class XnvMarketMakerStrategy:
                 )
         except RestError as exc:
             LOGGER.debug("Fill check %s: %s", order_id, exc)
+        return Decimal("0")
 
     def _sync_all_order_statuses(self) -> None:
         """Compare tracked orders against live open orders; log and remove any that filled or disappeared."""
@@ -1025,9 +1033,27 @@ class XnvMarketMakerStrategy:
                 for k, order in list(levels.items()):
                     if order.order_id not in live_ids:
                         to_remove.append((side, k))
-                        self._log_fill_status(pair, side, k, order.order_id)
+                        filled_qty = self._log_fill_status(pair, side, k, order.order_id)
+                        self._adjust_exposure_for_ladder_fill(side, filled_qty)
             for side, k in to_remove:
                 self.state.open_orders.get(pair, {}).get(side, {}).pop(k, None)
+
+    def _adjust_exposure_for_ladder_fill(self, side: str, filled_qty: Decimal) -> None:
+        """Reduce trend exposure when a ladder fill works against the open bite position."""
+        if filled_qty <= 0:
+            return
+        trend = self.state.trend_state
+        # DOWN trend (sold via bites) → buy fills reduce net short
+        # UP trend (bought via bites) → sell fills reduce net long
+        if (trend == TrendState.DOWN and side == "buy") or (
+            trend == TrendState.UP and side == "sell"
+        ):
+            before = self.state.trend_exposure_xnv
+            self.state.trend_exposure_xnv = max(Decimal("0"), before - filled_qty)
+            LOGGER.info(
+                "Exposure reduced by ladder %s fill: %s → %s",
+                side, before, self.state.trend_exposure_xnv,
+            )
 
 
 # ── Module-level helpers ────────────────────────────────────────────────────
