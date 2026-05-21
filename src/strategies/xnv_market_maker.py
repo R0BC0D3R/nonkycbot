@@ -458,8 +458,6 @@ class XnvMarketMakerStrategy:
             for k in list(existing.get(side, {}).keys()):
                 if (side, k) not in desired:
                     self._cancel_level(pair, side, k, existing[side][k])
-                    if delay > 0:
-                        time.sleep(delay)
 
 
     def _compute_desired_levels(
@@ -1118,7 +1116,7 @@ class XnvMarketMakerStrategy:
         for t in trades:
             ts_ms = t.get("timestamp_ms", 0)
             if ts_ms <= self.state.last_trade_ts_ms:
-                continue  # Already seen
+                continue  # Already seen (cursor is stored as last seen + 1)
             max_ts = max(max_ts, ts_ms)
             symbol = t.get("symbol", "?")
             side = t.get("side", "?").upper()
@@ -1132,7 +1130,7 @@ class XnvMarketMakerStrategy:
                 symbol, side, qty, price, fee_str, order_id,
             )
 
-        self.state.last_trade_ts_ms = max_ts
+        self.state.last_trade_ts_ms = max_ts + 1  # +1ms so next poll excludes this trade
 
     def _sync_all_order_statuses(self) -> None:
         """Compare tracked orders against live open orders; log and remove any that filled or disappeared."""
