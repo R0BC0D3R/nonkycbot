@@ -470,7 +470,7 @@ class XnvMarketMakerStrategy:
 
             if (
                 sell_price > 0
-                and sell_price > best_bid
+                and sell_price >= best_bid
                 and sell_price * qty >= pair_cfg.min_notional
             ):
                 result[("sell", k)] = (sell_price, qty)
@@ -489,11 +489,11 @@ class XnvMarketMakerStrategy:
     ) -> bool:
         if now - order.created_at >= self.config.max_order_age_sec:
             return True
-        # Reprice immediately if order has crossed the book (now inside the spread)
-        if side == "buy" and order.price >= best_ask:
+        # Reprice immediately if order has crossed strictly inside the spread
+        if side == "buy" and order.price > best_ask:
             LOGGER.info("[%s] buy L? @ %s crossed ask %s — repricing", pair, order.price, best_ask)
             return True
-        if side == "sell" and order.price <= best_bid:
+        if side == "sell" and order.price < best_bid:
             LOGGER.info("[%s] sell L? @ %s crossed bid %s — repricing", pair, order.price, best_bid)
             return True
         # Large-drift safety net (price moved significantly since placement)
@@ -941,18 +941,31 @@ class XnvMarketMakerStrategy:
             LOGGER.warning("Balance refresh failed: %s", exc)
 
     def _sync_all_order_statuses(self) -> None:
-        to_remove: list[tuple[str, str, int]] = []
+        to_remove: list[tuple[str, str, int, OrderStatusView]] = []
         for pair, sides in self.state.open_orders.items():
             for side, levels in sides.items():
                 for k, order in levels.items():
                     try:
                         status = self.client.get_order(order.order_id)
                         if _is_final(status):
-                            to_remove.append((pair, side, k))
+                            to_remove.append((pair, side, k, status))
                     except RestError as exc:
                         LOGGER.debug("Status check %s: %s", order.order_id, exc)
-        for pair, side, k in to_remove:
-            self.state.open_orders.get(pair, {}).get(side, {}).pop(k, None)
+        for pair, side, k, status in to_remove:
+            order = self.state.open_orders.get(pair, {}).get(side, {}).pop(k, None)
+            if order is not None:
+                filled = status.filled_qty
+                avg = status.avg_price
+                fill_info = (
+                    f"filled={filled} avg={avg}" if filled is not None and avg is not None
+                    else f"filled={filled}" if filled is not None
+                    else ""
+                )
+                LOGGER.info(
+                    "[%s] %s L%d %s — %s %s",
+                    pair, side.upper(), k, status.status.upper(),
+                    order.order_id, fill_info,
+                )
 
 
 # ── Module-level helpers ────────────────────────────────────────────────────
