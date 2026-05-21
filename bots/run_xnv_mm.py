@@ -43,10 +43,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    setup_logging(level=args.log_level)
-
+    # Load config first so log_file path can come from YAML
     with open(args.config) as f:
         config = yaml.safe_load(f)
+
+    setup_logging(level=args.log_level, log_file=config.get("log_file"))
 
     if args.monitor_only:
         config["mode"] = "monitor"

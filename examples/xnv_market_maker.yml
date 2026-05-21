@@ -40,7 +40,7 @@ size_step_factor:   "0.5"     # Level k size = base * (1 + k * 0.5)
 xmr_qty_fraction:   "0.60"    # XNV_XMR orders = 60% of USDT order size
 order_size_jitter_pct: "0.07" # ±7% random per-order size variation
 level_reprice_threshold_pct: "0.010"    # Reprice a level only if it drifts >1.0% from ideal
-max_order_age_sec: 300
+max_order_age_sec: 600
 
 # ── Inventory (3-asset target) ────────────────────────────────────────────
 inventory_target:
@@ -79,3 +79,4 @@ rest_retries: 3
 
 # ── State persistence ─────────────────────────────────────────────────────
 state_path: "state/xnv_mm_state.json"
+log_file:   "logs/xnv_mm.log"
