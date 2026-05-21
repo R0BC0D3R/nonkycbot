@@ -144,6 +144,7 @@ class XnvMarketMakerStrategy:
         self.state_path = state_path
         self.state = XnvMarketMakerState()
         self._last_balance_refresh = 0.0
+        self._last_sync_ts = 0.0
         self._balances: dict[str, tuple[Decimal, Decimal]] = {}
         # (pair, side, level) -> timestamp of last insufficient-funds failure
         self._insuf_funds_ts: dict[tuple[str, str, int], float] = {}
@@ -315,7 +316,10 @@ class XnvMarketMakerStrategy:
     def poll_once(self) -> None:
         now = time.time()
         self._refresh_balances(now)
-        self._sync_all_order_statuses()
+        # Sync order statuses every 2 minutes to avoid excessive API calls
+        if now - self._last_sync_ts >= 120.0:
+            self._sync_all_order_statuses()
+            self._last_sync_ts = now
 
         try:
             usdt_bid, usdt_ask, usdt_bid_qty, usdt_ask_qty = (
@@ -403,7 +407,9 @@ class XnvMarketMakerStrategy:
             current = existing.get(side, {}).get(k)
             if current is None:
                 self._place_level(pair, side, k, desired_price, desired_qty)
-            elif self._level_needs_replace(current, desired_price, pair, now):
+            elif self._level_needs_replace(
+                current, desired_price, pair, now, side, best_bid, best_ask
+            ):
                 self._cancel_level(pair, side, k, current.order_id)
                 self._place_level(pair, side, k, desired_price, desired_qty)
 
@@ -479,9 +485,20 @@ class XnvMarketMakerStrategy:
         desired_price: Decimal,
         pair: str,
         now: float,
+        side: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
     ) -> bool:
         if now - order.created_at >= self.config.max_order_age_sec:
             return True
+        # Reprice immediately if order has crossed the book (now inside the spread)
+        if side == "buy" and order.price >= best_ask:
+            LOGGER.info("[%s] buy L? @ %s crossed ask %s — repricing", pair, order.price, best_ask)
+            return True
+        if side == "sell" and order.price <= best_bid:
+            LOGGER.info("[%s] sell L? @ %s crossed bid %s — repricing", pair, order.price, best_bid)
+            return True
+        # Large-drift safety net (price moved significantly since placement)
         if order.price > 0:
             drift = abs(order.price - desired_price) / order.price
             if drift >= self.config.level_reprice_threshold_pct:
@@ -792,6 +809,22 @@ class XnvMarketMakerStrategy:
             )
             self.state.arb_last_executed_ts = now
             return True
+
+        # Pre-flight notional checks
+        usdt_pair = self.config.pairs[self.config.symbol_usdt]
+        xmr_pair = self.config.pairs[self.config.symbol_xmr]
+        if size * usdt_price < usdt_pair.min_notional:
+            LOGGER.warning(
+                "Arb %s: USDT notional %s below minimum %s — skipping",
+                direction, size * usdt_price, usdt_pair.min_notional,
+            )
+            return False
+        if size * xmr_price < xmr_pair.min_notional:
+            LOGGER.warning(
+                "Arb %s: XMR notional %s below minimum %s — skipping",
+                direction, size * xmr_price, xmr_pair.min_notional,
+            )
+            return False
 
         # Leg 1: XNV_XMR (less liquid — fail fast here)
         xmr_cid = f"xnv-arb-xmr-{uuid.uuid4().hex[:12]}"
