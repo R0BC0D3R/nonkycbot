@@ -234,6 +234,55 @@ class NonkycRestExchangeClient(ExchangeClient):
             )
         return orders
 
+    def list_account_trades(self, since_ms: int = 0, limit: int = 500) -> list[dict]:
+        try:
+            params: dict = {"limit": str(min(limit, 500))}
+            if since_ms > 0:
+                params["since"] = str(since_ms)
+            response = self._rest.send(
+                RestRequest(method="GET", path="/account/trades", params=params)
+            )
+        except RestError as exc:
+            LOGGER.warning("list_account_trades failed: %s", exc)
+            return []
+        # Response is a bare array per API schema
+        payload = response if isinstance(response, list) else response.get("data", response.get("result", []))
+        if not isinstance(payload, list):
+            return []
+        trades = []
+        for entry in payload:
+            if not isinstance(entry, dict):
+                continue
+            # symbol lives inside market.symbol
+            market = entry.get("market") or {}
+            symbol = str(market.get("symbol", "")) if isinstance(market, dict) else ""
+            side = str(entry.get("side", "")).lower()
+            price_raw = entry.get("price")
+            qty_raw = entry.get("quantity")
+            fee_raw = entry.get("fee")
+            order_id = str(entry.get("orderId", ""))
+            trade_id = str(entry.get("id", ""))
+            ts_raw = entry.get("timestamp", 0)
+            try:
+                ts_ms = int(ts_raw)
+                if ts_ms and ts_ms < 1_000_000_000_000:
+                    ts_ms *= 1000  # seconds → milliseconds
+            except (TypeError, ValueError):
+                ts_ms = 0
+            if not price_raw or not qty_raw:
+                continue
+            trades.append({
+                "trade_id": trade_id,
+                "order_id": order_id,
+                "symbol": symbol,
+                "side": side,
+                "price": str(price_raw),
+                "quantity": str(qty_raw),
+                "fee": str(fee_raw) if fee_raw is not None else None,
+                "timestamp_ms": ts_ms,
+            })
+        return trades
+
     def get_balances(self) -> dict[str, tuple[Decimal, Decimal]]:
         balances = {}
         for balance in self._rest.get_balances():

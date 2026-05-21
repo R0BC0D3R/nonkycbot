@@ -74,3 +74,10 @@ class ExchangeClient(Protocol):
 
     def get_balances(self) -> dict[str, tuple[Decimal, Decimal]]:
         """Return balances as mapping asset -> (available, held)."""
+
+    def list_account_trades(
+        self, since_ms: int = 0, limit: int = 500
+    ) -> list[dict]:
+        """Return account trades newer than since_ms (epoch milliseconds).
+        Each dict has at minimum: symbol, side, price, quantity, timestamp_ms, order_id.
+        Returns empty list if unsupported."""

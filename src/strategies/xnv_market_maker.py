@@ -129,6 +129,7 @@ class XnvMarketMakerState:
     ratio_history: list[PricePoint] = field(default_factory=list)
     arb_last_executed_ts: float = 0.0
     arb_stuck: StuckArb | None = None
+    last_trade_ts_ms: int = 0
 
 
 # ── Strategy ───────────────────────────────────────────────────────────────
@@ -205,6 +206,7 @@ class XnvMarketMakerStrategy:
             ],
             arb_last_executed_ts=float(raw.get("arb_last_executed_ts", 0.0)),
             arb_stuck=arb_stuck,
+            last_trade_ts_ms=int(raw.get("last_trade_ts_ms", 0)),
         )
 
     def save_state(self) -> None:
@@ -241,6 +243,7 @@ class XnvMarketMakerStrategy:
                 for p in self.state.ratio_history[-self.config.arb_ratio_window :]
             ],
             "arb_last_executed_ts": self.state.arb_last_executed_ts,
+            "last_trade_ts_ms": self.state.last_trade_ts_ms,
             "arb_stuck": (
                 {
                     "pair": self.state.arb_stuck.pair,
@@ -327,6 +330,8 @@ class XnvMarketMakerStrategy:
         self._refresh_balances(now)
         # Settle previous bite order unconditionally (fill/cancel check)
         self._settle_previous_bite(now)
+        # Poll account trades for comprehensive fill logging (every tick)
+        self._poll_account_trades(now)
         # Sync ladder order statuses every 30s using list_open_orders comparison
         if now - self._last_sync_ts >= 30.0:
             self._sync_all_order_statuses()
@@ -1097,6 +1102,37 @@ class XnvMarketMakerStrategy:
         except RestError as exc:
             LOGGER.debug("Fill check %s: %s", order_id, exc)
         return Decimal("0")
+
+    def _poll_account_trades(self, now: float) -> None:
+        """Fetch new account trades since last seen and log every fill."""
+        # On first call, anchor to now so we don't replay history.
+        if self.state.last_trade_ts_ms == 0:
+            self.state.last_trade_ts_ms = int(now * 1000)
+            return
+
+        trades = self.client.list_account_trades(since_ms=self.state.last_trade_ts_ms)
+        if not trades:
+            return
+
+        max_ts = self.state.last_trade_ts_ms
+        for t in trades:
+            ts_ms = t.get("timestamp_ms", 0)
+            if ts_ms <= self.state.last_trade_ts_ms:
+                continue  # Already seen
+            max_ts = max(max_ts, ts_ms)
+            symbol = t.get("symbol", "?")
+            side = t.get("side", "?").upper()
+            price = t.get("price", "?")
+            qty = t.get("quantity", "?")
+            fee = t.get("fee")
+            order_id = t.get("order_id", "?")
+            fee_str = f"  fee={fee}" if fee else ""
+            LOGGER.info(
+                "TRADE [%s] %s qty=%s @ %s%s  order=%s",
+                symbol, side, qty, price, fee_str, order_id,
+            )
+
+        self.state.last_trade_ts_ms = max_ts
 
     def _sync_all_order_statuses(self) -> None:
         """Compare tracked orders against live open orders; log and remove any that filled or disappeared."""
