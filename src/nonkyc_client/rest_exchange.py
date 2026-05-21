@@ -264,7 +264,7 @@ class NonkycRestExchangeClient(ExchangeClient):
             price_raw = entry.get("price")
             qty_raw = entry.get("quantity")
             fee_raw = entry.get("fee")
-            order_id = str(entry.get("orderId", entry.get("order_id", entry.get("order", ""))))
+            order_id = str(next((v for k, v in entry.items() if k.lower() in ("orderid", "order_id")), ""))
             trade_id = str(entry.get("id", ""))
             ts_raw = entry.get("timestamp", 0)
             try:
