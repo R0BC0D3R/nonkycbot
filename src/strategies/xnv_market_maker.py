@@ -50,7 +50,6 @@ class XnvMarketMakerConfig:
     level_0_offset_pct: Decimal  # Distance of L0 from mid as fraction of mid
     level_spacing_pct: Decimal   # Additional distance per level as fraction of mid
     size_step_factor: Decimal
-    ladder_reprice_threshold_pct: Decimal
     max_order_age_sec: float
     # Per-pair precision
     pairs: dict[str, PairConfig]
@@ -145,7 +144,6 @@ class XnvMarketMakerStrategy:
         self.state = XnvMarketMakerState()
         self._last_balance_refresh = 0.0
         self._balances: dict[str, tuple[Decimal, Decimal]] = {}
-        self._last_placed_mid: dict[str, Decimal] = {}
         # (pair, side, level) -> timestamp of last insufficient-funds failure
         self._insuf_funds_ts: dict[tuple[str, str, int], float] = {}
 
@@ -390,16 +388,6 @@ class XnvMarketMakerStrategy:
     ) -> None:
         mid = (best_bid + best_ask) / Decimal("2")
 
-        last_mid = self._last_placed_mid.get(pair)
-        needs_rebuild = last_mid is None or (
-            last_mid > 0
-            and abs(mid - last_mid) / last_mid
-            > self.config.ladder_reprice_threshold_pct
-        )
-
-        if needs_rebuild:
-            self._cancel_all_ladder(pair)
-
         desired = self._compute_desired_levels(pair, best_bid, best_ask, center_offset)
         existing = self.state.open_orders.get(pair, {})
 
@@ -421,7 +409,6 @@ class XnvMarketMakerStrategy:
                 if (side, k) not in desired:
                     self._cancel_level(pair, side, k, existing[side][k].order_id)
 
-        self._last_placed_mid[pair] = mid
 
     def _compute_desired_levels(
         self,

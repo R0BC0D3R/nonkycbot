@@ -154,27 +154,21 @@ class NonkycRestExchangeClient(ExchangeClient):
         )
 
     def list_open_orders(self, symbol: str) -> list[OpenOrder]:
-        endpoints = [
-            RestRequest(method="GET", path="/openorders", params={"symbol": symbol}),
-            RestRequest(method="GET", path="/openorders", params={"market": symbol}),
-            RestRequest(method="GET", path="/getopenorders", params={"symbol": symbol}),
-            RestRequest(method="GET", path="/orders", params={"symbol": symbol}),
-        ]
-        last_error: Exception | None = None
-        last_non_404: Exception | None = None
-        for request in endpoints:
-            try:
-                response = self._rest.send(request)
-                return self._parse_open_orders(response, symbol)
-            except RestError as exc:
-                last_error = exc
-                if not self._is_not_found_error(exc):
-                    last_non_404 = exc
-        if last_non_404 is not None:
-            raise last_non_404
-        if last_error is not None:
-            return []
-        return []
+        # API uses slash format (XNV/USDT) and requires status=active for open orders
+        slash_symbol = symbol.replace("_", "/")
+        try:
+            response = self._rest.send(
+                RestRequest(
+                    method="GET",
+                    path="/account/orders",
+                    params={"symbol": slash_symbol, "status": "active", "limit": "500"},
+                )
+            )
+        except RestError as exc:
+            if self._is_not_found_error(exc):
+                return []
+            raise
+        return self._parse_open_orders(response, symbol)
 
     def _parse_open_orders(
         self, response: dict[str, Any], symbol: str
