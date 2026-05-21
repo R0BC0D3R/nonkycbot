@@ -744,6 +744,25 @@ class XnvMarketMakerStrategy:
         else:
             side, price = "sell", _quantize_price(best_bid, pair_cfg.tick_size, side="sell")
 
+        # Balance gate: ensure actual inventory backs the bite.
+        if side == "sell":
+            avail_xnv = self._balances.get("XNV", (Decimal("0"), Decimal("0")))[0]
+            if avail_xnv < bite_qty:
+                LOGGER.info(
+                    "Taker bite skipped: insufficient XNV — available=%s needed=%s",
+                    avail_xnv, bite_qty,
+                )
+                return
+        else:
+            avail_usdt = self._balances.get("USDT", (Decimal("0"), Decimal("0")))[0]
+            needed = bite_qty * price
+            if avail_usdt < needed:
+                LOGGER.info(
+                    "Taker bite skipped: insufficient USDT — available=%s needed=%s",
+                    avail_usdt, needed,
+                )
+                return
+
         if self.config.mode in {"monitor", "dry-run"}:
             LOGGER.info("DRY-RUN taker bite %s %s @ %s", side, bite_qty, price)
             self.state.last_bite_ts = now
