@@ -104,6 +104,12 @@ def run_xnv_mm(config: dict, state_path: Path) -> None:
         f"mode={strategy.config.mode}"
     )
 
-    while True:
-        strategy.poll_once()
-        time.sleep(strategy.config.poll_interval_sec)
+    try:
+        while True:
+            strategy.poll_once()
+            time.sleep(strategy.config.poll_interval_sec)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        print("\nShutting down — cancelling all open orders...")
+        strategy.cancel_all_on_startup()

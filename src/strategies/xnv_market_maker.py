@@ -145,8 +145,9 @@ class XnvMarketMakerStrategy:
         self.state = XnvMarketMakerState()
         self._last_balance_refresh = 0.0
         self._balances: dict[str, tuple[Decimal, Decimal]] = {}
-        # Track last mid used for reprice threshold per pair
         self._last_placed_mid: dict[str, Decimal] = {}
+        # (pair, side, level) -> timestamp of last insufficient-funds failure
+        self._insuf_funds_ts: dict[tuple[str, str, int], float] = {}
 
     # ── Persistence ────────────────────────────────────────────────────────
 
@@ -404,6 +405,9 @@ class XnvMarketMakerStrategy:
 
         # Place or replace desired levels
         for (side, k), (desired_price, desired_qty) in desired.items():
+            fail_ts = self._insuf_funds_ts.get((pair, side, k), 0.0)
+            if now - fail_ts < self.config.taker_bite_interval_sec:
+                continue  # Still in cooldown after insufficient-funds failure
             current = existing.get(side, {}).get(k)
             if current is None:
                 self._place_level(pair, side, k, desired_price, desired_qty)
@@ -519,9 +523,10 @@ class XnvMarketMakerStrategy:
         except RestError as exc:
             if "insufficient funds" in str(exc).lower():
                 LOGGER.warning(
-                    "[%s] Insufficient funds: %s L%d qty=%s @ %s",
-                    pair, side, level, qty, price,
+                    "[%s] Insufficient funds: %s L%d qty=%s @ %s — skipping for %ds",
+                    pair, side, level, qty, price, self.config.taker_bite_interval_sec,
                 )
+                self._insuf_funds_ts[(pair, side, level)] = time.time()
             else:
                 LOGGER.error("[%s] Place %s L%d failed: %s", pair, side, level, exc)
             return
