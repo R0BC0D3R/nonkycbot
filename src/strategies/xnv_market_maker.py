@@ -291,14 +291,22 @@ class XnvMarketMakerStrategy:
     def cancel_all_on_startup(self) -> None:
         """Cancel all open orders on both pairs and clear tracked state."""
         if self.config.mode in {"monitor", "dry-run"}:
-            LOGGER.info("DRY-RUN: skipping startup cancel_all")
+            LOGGER.info("DRY-RUN: skipping startup cancel")
             return
+        total = 0
         for symbol in (self.config.symbol_usdt, self.config.symbol_xmr):
             try:
-                ok = self.client.cancel_all(symbol)
-                LOGGER.info("Startup cancel_all %s: %s", symbol, "OK" if ok else "no confirmation")
+                orders = self.client.list_open_orders(symbol)
             except Exception as exc:
-                LOGGER.warning("Startup cancel_all %s failed: %s", symbol, exc)
+                LOGGER.warning("Startup list_open_orders %s failed: %s", symbol, exc)
+                continue
+            for order in orders:
+                try:
+                    self.client.cancel_order(order.order_id)
+                    total += 1
+                except Exception as exc:
+                    LOGGER.warning("Startup cancel %s failed: %s", order.order_id, exc)
+        LOGGER.info("Startup: cancelled %d open orders", total)
         self.state.open_orders.clear()
 
     # ── Main loop ──────────────────────────────────────────────────────────
