@@ -8,6 +8,7 @@ import random
 import statistics
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from enum import Enum
@@ -151,6 +152,8 @@ class XnvMarketMakerStrategy:
         # (pair, side, level) -> timestamp of last insufficient-funds failure
         self._insuf_funds_ts: dict[tuple[str, str, int], float] = {}
         self._current_mids: dict[str, Decimal] = {}
+        # pair -> deque of (side, level_index) pending reprice; one processed per tick
+        self._reprice_queue: dict[str, deque[tuple[str, int]]] = {}
 
     # ── Persistence ────────────────────────────────────────────────────────
 
@@ -411,9 +414,26 @@ class XnvMarketMakerStrategy:
         center_offset = max(min(center_offset, max_offset), -max_offset)
 
         desired = self._compute_desired_levels(pair, best_bid, best_ask, center_offset)
+
+        # Step 1: process one pending reprice from queue (one per tick per pair).
+        queue = self._reprice_queue.setdefault(pair, deque())
+        while queue:
+            side, k = queue.popleft()
+            current = self.state.open_orders.get(pair, {}).get(side, {}).get(k)
+            if current is None:
+                continue  # Already gone (filled or cancelled), skip
+            if (side, k) in desired:
+                desired_price, desired_qty = desired[(side, k)]
+                self._cancel_level(pair, side, k, current)
+                self._place_level(pair, side, k, desired_price, desired_qty)
+            else:
+                self._cancel_level(pair, side, k, current)
+            break  # One reprice per tick
+
+        # Re-read existing after queue processing (state may have changed above).
         existing = self.state.open_orders.get(pair, {})
 
-        # Place or replace desired levels
+        # Step 2: new placements (immediate) and queue reprices for next ticks.
         for (side, k), (desired_price, desired_qty) in desired.items():
             fail_ts = self._insuf_funds_ts.get((pair, side, k), 0.0)
             if now - fail_ts < self.config.taker_bite_interval_sec:
@@ -424,14 +444,17 @@ class XnvMarketMakerStrategy:
             elif self._level_needs_replace(
                 current, desired_price, pair, now, side, best_bid, best_ask
             ):
-                self._cancel_level(pair, side, k, current)
-                self._place_level(pair, side, k, desired_price, desired_qty)
+                if (side, k) not in queue:
+                    queue.append((side, k))
 
-        # Cancel levels no longer in desired set
+        # Step 3: cancel levels no longer in desired set (immediate).
+        existing = self.state.open_orders.get(pair, {})
         for side in ("buy", "sell"):
             for k in list(existing.get(side, {}).keys()):
                 if (side, k) not in desired:
                     self._cancel_level(pair, side, k, existing[side][k])
+                    if delay > 0:
+                        time.sleep(delay)
 
 
     def _compute_desired_levels(
