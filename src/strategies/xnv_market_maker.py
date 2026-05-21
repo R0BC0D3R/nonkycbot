@@ -433,8 +433,6 @@ class XnvMarketMakerStrategy:
 
         pair_cfg = self.config.pairs[pair]
         mid = (best_bid + best_ask) / Decimal("2")
-        if mid > 0 and spread / mid < pair_cfg.fee_rate * Decimal("2"):
-            return {}  # Spread too narrow to quote profitably
 
         result: dict[tuple[str, int], tuple[Decimal, Decimal]] = {}
 
@@ -564,6 +562,7 @@ class XnvMarketMakerStrategy:
             return
         try:
             self.client.cancel_order(order_id)
+            LOGGER.info("[%s] Cancelled %s L%d %s", pair, side, level, order_id)
         except RestError as exc:
             if "not found" not in str(exc).lower():
                 LOGGER.error("[%s] Cancel %s failed: %s", pair, order_id, exc)
