@@ -155,6 +155,7 @@ class XnvMarketMakerStrategy:
         self._current_mids: dict[str, Decimal] = {}
         # pair -> deque of (side, level_index) pending reprice; one processed per tick
         self._reprice_queue: dict[str, deque[tuple[str, int]]] = {}
+        self._bite_skip_reason: str = ""  # last logged skip reason; suppresses repeats
 
     # ── Persistence ────────────────────────────────────────────────────────
 
@@ -743,6 +744,11 @@ class XnvMarketMakerStrategy:
             self.state.last_bite_order_id = None
             self.state.last_bite_side = None
 
+    def _log_bite_skip(self, reason: str) -> None:
+        if reason != self._bite_skip_reason:
+            LOGGER.info("Taker bite skipped: %s", reason)
+            self._bite_skip_reason = reason
+
     def _maybe_place_taker_bite(
         self,
         best_bid: Decimal,
@@ -757,10 +763,10 @@ class XnvMarketMakerStrategy:
         # Block deepening in the current trend direction; unwinding is always allowed.
         exp = self.state.trend_exposure_xnv
         if self.state.trend_state == TrendState.DOWN and exp <= -max_exp:
-            LOGGER.info("Taker bite skipped: short exposure %s >= max %s", -exp, max_exp)
+            self._log_bite_skip(f"short exposure {-exp} >= max {max_exp}")
             return
         if self.state.trend_state == TrendState.UP and exp >= max_exp:
-            LOGGER.info("Taker bite skipped: long exposure %s >= max %s", exp, max_exp)
+            self._log_bite_skip(f"long exposure {exp} >= max {max_exp}")
             return
 
         pair_cfg = self.config.pairs[self.config.symbol_usdt]
@@ -784,19 +790,13 @@ class XnvMarketMakerStrategy:
         if side == "sell":
             avail_xnv = self._balances.get("XNV", (Decimal("0"), Decimal("0")))[0]
             if avail_xnv < bite_qty:
-                LOGGER.info(
-                    "Taker bite skipped: insufficient XNV — available=%s needed=%s",
-                    avail_xnv, bite_qty,
-                )
+                self._log_bite_skip(f"insufficient XNV available={avail_xnv} needed={bite_qty}")
                 return
         else:
             avail_usdt = self._balances.get("USDT", (Decimal("0"), Decimal("0")))[0]
             needed = bite_qty * price
             if avail_usdt < needed:
-                LOGGER.info(
-                    "Taker bite skipped: insufficient USDT — available=%s needed=%s",
-                    avail_usdt, needed,
-                )
+                self._log_bite_skip(f"insufficient USDT available={avail_usdt} needed={needed}")
                 return
 
         if self.config.mode in {"monitor", "dry-run"}:
@@ -817,6 +817,7 @@ class XnvMarketMakerStrategy:
             self.state.last_bite_order_id = order_id
             self.state.last_bite_side = side
             self.state.last_bite_ts = now
+            self._bite_skip_reason = ""
             LOGGER.info(
                 "Taker bite %s qty=%s @ %s  id=%s  exposure=%s (pending)",
                 side, bite_qty, price, order_id, self.state.trend_exposure_xnv,

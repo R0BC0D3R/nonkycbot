@@ -250,9 +250,13 @@ class NonkycRestExchangeClient(ExchangeClient):
         if not isinstance(payload, list):
             return []
         trades = []
+        _logged_raw = False
         for entry in payload:
             if not isinstance(entry, dict):
                 continue
+            if not _logged_raw:
+                LOGGER.debug("account trade raw entry: %s", entry)
+                _logged_raw = True
             # symbol lives inside market.symbol
             market = entry.get("market") or {}
             symbol = str(market.get("symbol", "")) if isinstance(market, dict) else ""
@@ -260,7 +264,7 @@ class NonkycRestExchangeClient(ExchangeClient):
             price_raw = entry.get("price")
             qty_raw = entry.get("quantity")
             fee_raw = entry.get("fee")
-            order_id = str(entry.get("orderId", ""))
+            order_id = str(entry.get("orderId", entry.get("order_id", entry.get("order", ""))))
             trade_id = str(entry.get("id", ""))
             ts_raw = entry.get("timestamp", 0)
             try:
