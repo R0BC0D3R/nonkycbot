@@ -146,7 +146,7 @@ class NonkycRestExchangeClient(ExchangeClient):
         avg_price = self._extract_decimal(
             raw, ("avgPrice", "avg_price", "average", "price")
         )
-        filled = self._extract_decimal(raw, ("filled", "filledQty", "filled_qty"))
+        filled = self._extract_decimal(raw, ("executedQuantity", "filled", "filledQty", "filled_qty"))
         updated_at = self._extract_float(
             raw, ("updated", "updatedAt", "timestamp", "time")
         )
