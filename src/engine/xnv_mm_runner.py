@@ -50,6 +50,9 @@ def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
         level_spacing_pct=Decimal(str(config.get("level_spacing_pct", "0.50"))),
         size_step_factor=Decimal(str(config.get("size_step_factor", "0.5"))),
         max_order_age_sec=float(config.get("max_order_age_sec", 120)),
+        level_reprice_threshold_pct=Decimal(
+            str(config.get("level_reprice_threshold_pct", "0.004"))
+        ),
         # Per-pair precision
         pairs={symbol_usdt: _pair_cfg(symbol_usdt), symbol_xmr: _pair_cfg(symbol_xmr)},
         # Inventory

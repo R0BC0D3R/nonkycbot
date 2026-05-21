@@ -190,6 +190,9 @@ class NonkycRestExchangeClient(ExchangeClient):
         for entry in payload:
             if not isinstance(entry, dict):
                 continue
+            # Skip orders that are not active (filled/cancelled)
+            if entry.get("isActive") is False:
+                continue
             order_id = str(
                 entry.get(
                     "id",

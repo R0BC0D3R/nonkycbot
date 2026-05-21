@@ -51,6 +51,7 @@ class XnvMarketMakerConfig:
     level_spacing_pct: Decimal   # Additional distance per level as fraction of mid
     size_step_factor: Decimal
     max_order_age_sec: float
+    level_reprice_threshold_pct: Decimal  # Min price drift to trigger a level reprice
     # Per-pair precision
     pairs: dict[str, PairConfig]
     # 3-asset inventory
@@ -481,9 +482,10 @@ class XnvMarketMakerStrategy:
     ) -> bool:
         if now - order.created_at >= self.config.max_order_age_sec:
             return True
-        tick = self.config.pairs[pair].tick_size
-        if tick > 0 and abs(order.price - desired_price) >= tick:
-            return True
+        if order.price > 0:
+            drift = abs(order.price - desired_price) / order.price
+            if drift >= self.config.level_reprice_threshold_pct:
+                return True
         return False
 
     def _cancel_all_ladder(self, pair: str) -> None:
