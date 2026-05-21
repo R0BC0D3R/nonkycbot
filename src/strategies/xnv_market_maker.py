@@ -424,14 +424,14 @@ class XnvMarketMakerStrategy:
             elif self._level_needs_replace(
                 current, desired_price, pair, now, side, best_bid, best_ask
             ):
-                self._cancel_level(pair, side, k, current.order_id)
+                self._cancel_level(pair, side, k, current)
                 self._place_level(pair, side, k, desired_price, desired_qty)
 
         # Cancel levels no longer in desired set
         for side in ("buy", "sell"):
             for k in list(existing.get(side, {}).keys()):
                 if (side, k) not in desired:
-                    self._cancel_level(pair, side, k, existing[side][k].order_id)
+                    self._cancel_level(pair, side, k, existing[side][k])
 
 
     def _compute_desired_levels(
@@ -526,7 +526,7 @@ class XnvMarketMakerStrategy:
         existing = self.state.open_orders.get(pair, {})
         for side in ("buy", "sell"):
             for k, order in list(existing.get(side, {}).items()):
-                self._cancel_level(pair, side, k, order.order_id)
+                self._cancel_level(pair, side, k, order)
 
     def _place_level(
         self,
@@ -574,17 +574,22 @@ class XnvMarketMakerStrategy:
         )
 
     def _cancel_level(
-        self, pair: str, side: str, level: int, order_id: str
+        self, pair: str, side: str, level: int, order: LevelOrder
     ) -> None:
+        order_id = order.order_id
         if self.config.mode in {"monitor", "dry-run"}:
             LOGGER.info(
-                "[%s] DRY-RUN cancel %s L%d %s", pair, side, level, order_id
+                "[%s] DRY-RUN cancel %s L%d qty=%s @ %s %s",
+                pair, side, level, order.quantity, order.price, order_id,
             )
             self.state.open_orders.get(pair, {}).get(side, {}).pop(level, None)
             return
         try:
             self.client.cancel_order(order_id)
-            LOGGER.info("[%s] Cancelled %s L%d %s", pair, side, level, order_id)
+            LOGGER.info(
+                "[%s] Cancelled %s L%d qty=%s @ %s %s",
+                pair, side, level, order.quantity, order.price, order_id,
+            )
         except RestError as exc:
             if "not found" in str(exc).lower():
                 # Order already gone — likely filled before we could cancel

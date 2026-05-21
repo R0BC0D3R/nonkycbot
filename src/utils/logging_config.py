@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import sys
 import threading
 from typing import Any
@@ -151,7 +152,8 @@ def setup_logging(
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    # File handler (if specified)
+    # File handler (if specified) — rotates daily at midnight, keeps 30 days.
+    # Current day: logs/xnv_mm.log  Previous days: logs/xnv_mm.log.2026-05-21
     if log_file:
         try:
             from pathlib import Path
@@ -159,7 +161,14 @@ def setup_logging(
             log_path = Path(log_file)
             log_path.parent.mkdir(parents=True, exist_ok=True)
 
-            file_handler = logging.FileHandler(log_file)
+            file_handler = logging.handlers.TimedRotatingFileHandler(
+                log_file,
+                when="midnight",
+                interval=1,
+                backupCount=30,
+                encoding="utf-8",
+            )
+            file_handler.suffix = "%Y-%m-%d"
             file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
