@@ -663,8 +663,13 @@ class XnvMarketMakerStrategy:
         if self.state.last_bite_order_id is None:
             return
         prev_id = self.state.last_bite_order_id
+        LOGGER.info("Bite settle: checking order %s", prev_id)
         try:
             prev_status = self.client.get_order(prev_id)
+            LOGGER.info(
+                "Bite settle: id=%s status=%r filled_qty=%s avg_price=%s",
+                prev_id, prev_status.status, prev_status.filled_qty, prev_status.avg_price,
+            )
             if _is_final(prev_status):
                 filled = prev_status.filled_qty or Decimal("0")
                 if filled > 0:
@@ -673,20 +678,26 @@ class XnvMarketMakerStrategy:
                         "Taker bite %s confirmed filled=%s  exposure=%s",
                         prev_id, filled, self.state.trend_exposure_xnv,
                     )
+                else:
+                    LOGGER.info(
+                        "Taker bite %s final (status=%s) but filled_qty=0 — not crediting exposure",
+                        prev_id, prev_status.status,
+                    )
                 self.state.last_bite_order_id = None
             else:
                 # Still open — cancel and restart cooldown.
                 LOGGER.info(
-                    "Taker bite %s unfilled — cancelling, restarting cooldown", prev_id
+                    "Taker bite %s status=%s (not final) — cancelling, restarting cooldown",
+                    prev_id, prev_status.status,
                 )
                 try:
                     self.client.cancel_order(prev_id)
-                except RestError:
-                    pass
+                except RestError as cancel_exc:
+                    LOGGER.warning("Bite cancel %s failed: %s", prev_id, cancel_exc)
                 self.state.last_bite_order_id = None
                 self.state.last_bite_ts = now
-        except RestError:
-            self.state.last_bite_order_id = None
+        except RestError as exc:
+            LOGGER.warning("Bite settle get_order %s failed: %s — clearing id", prev_id, exc)
 
     def _maybe_place_taker_bite(
         self,

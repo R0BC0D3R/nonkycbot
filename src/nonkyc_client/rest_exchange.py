@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from engine.exchange_client import ExchangeClient, OpenOrder, OrderStatusView
 from nonkyc_client.models import OrderRequest
 from nonkyc_client.rest import RestClient, RestError, RestRequest
+
+LOGGER = logging.getLogger(__name__)
 
 
 class NonkycRestExchangeClient(ExchangeClient):
@@ -139,6 +142,7 @@ class NonkycRestExchangeClient(ExchangeClient):
     def get_order(self, order_id: str) -> OrderStatusView:
         response = self._rest.get_order_status(order_id)
         raw = response.raw_payload
+        LOGGER.debug("get_order %s raw=%s", order_id, raw)
         avg_price = self._extract_decimal(
             raw, ("avgPrice", "avg_price", "average", "price")
         )
