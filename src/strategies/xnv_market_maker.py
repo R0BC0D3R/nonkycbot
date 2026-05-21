@@ -122,6 +122,7 @@ class XnvMarketMakerState:
     trend_state: TrendState = TrendState.NEUTRAL
     trend_exposure_xnv: Decimal = field(default_factory=lambda: Decimal("0"))
     last_bite_ts: float = 0.0
+    last_bite_order_id: str | None = None
     price_history: list[PricePoint] = field(default_factory=list)
     ratio_history: list[PricePoint] = field(default_factory=list)
     arb_last_executed_ts: float = 0.0
@@ -188,6 +189,7 @@ class XnvMarketMakerStrategy:
             trend_state=TrendState(raw.get("trend_state", "neutral")),
             trend_exposure_xnv=Decimal(str(raw.get("trend_exposure_xnv", "0"))),
             last_bite_ts=float(raw.get("last_bite_ts", 0.0)),
+            last_bite_order_id=raw.get("last_bite_order_id"),
             price_history=[
                 PricePoint(ts=float(p["ts"]), value=Decimal(p["value"]))
                 for p in raw.get("price_history", [])
@@ -224,6 +226,7 @@ class XnvMarketMakerStrategy:
             "trend_state": self.state.trend_state.value,
             "trend_exposure_xnv": str(self.state.trend_exposure_xnv),
             "last_bite_ts": self.state.last_bite_ts,
+            "last_bite_order_id": self.state.last_bite_order_id,
             "price_history": [
                 {"ts": p.ts, "value": str(p.value)} for p in self.state.price_history
             ],
@@ -659,6 +662,35 @@ class XnvMarketMakerStrategy:
         best_ask: Decimal,
         now: float,
     ) -> None:
+        # Check previous bite: cancel if still open, credit exposure if filled.
+        if self.state.last_bite_order_id is not None:
+            prev_id = self.state.last_bite_order_id
+            try:
+                prev_status = self.client.get_order(prev_id)
+                if _is_final(prev_status):
+                    filled = prev_status.filled_qty or Decimal("0")
+                    if filled > 0:
+                        self.state.trend_exposure_xnv += filled
+                        LOGGER.info(
+                            "Taker bite %s confirmed filled=%s  exposure=%s",
+                            prev_id, filled, self.state.trend_exposure_xnv,
+                        )
+                    self.state.last_bite_order_id = None
+                else:
+                    # Still open on this tick — cancel and restart cooldown.
+                    LOGGER.info(
+                        "Taker bite %s unfilled — cancelling, restarting cooldown", prev_id
+                    )
+                    try:
+                        self.client.cancel_order(prev_id)
+                    except RestError:
+                        pass
+                    self.state.last_bite_order_id = None
+                    self.state.last_bite_ts = now
+                    return
+            except RestError:
+                self.state.last_bite_order_id = None
+
         if now - self.state.last_bite_ts < self.config.taker_bite_interval_sec:
             return
 
@@ -685,15 +717,13 @@ class XnvMarketMakerStrategy:
             side, price = "sell", _quantize_price(best_bid, pair_cfg.tick_size, side="sell")
 
         if self.config.mode in {"monitor", "dry-run"}:
-            LOGGER.info(
-                "DRY-RUN taker bite %s %s @ %s", side, bite_qty, price
-            )
+            LOGGER.info("DRY-RUN taker bite %s %s @ %s", side, bite_qty, price)
             self.state.last_bite_ts = now
             return
 
         client_id = f"xnv-bite-{uuid.uuid4().hex[:12]}"
         try:
-            self.client.place_limit(
+            order_id = self.client.place_limit(
                 self.config.symbol_usdt,
                 side,
                 price,
@@ -701,11 +731,11 @@ class XnvMarketMakerStrategy:
                 client_id=client_id,
                 strict_validate=False,
             )
-            self.state.trend_exposure_xnv += bite_qty
+            self.state.last_bite_order_id = order_id
             self.state.last_bite_ts = now
             LOGGER.info(
-                "Taker bite %s qty=%s @ %s  exposure=%s",
-                side, bite_qty, price, self.state.trend_exposure_xnv,
+                "Taker bite %s qty=%s @ %s  id=%s  exposure=%s (pending)",
+                side, bite_qty, price, order_id, self.state.trend_exposure_xnv,
             )
         except RestError as exc:
             LOGGER.warning("Taker bite failed: %s", exc)
