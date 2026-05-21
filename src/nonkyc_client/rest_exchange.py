@@ -23,6 +23,12 @@ class NonkycRestExchangeClient(ExchangeClient):
         return Decimal(ticker.last_price)
 
     def get_orderbook_top(self, symbol: str) -> tuple[Decimal, Decimal]:
+        bid, ask, _, _ = self.get_orderbook_top_with_qty(symbol)
+        return bid, ask
+
+    def get_orderbook_top_with_qty(
+        self, symbol: str
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
         response = self._rest.send(
             RestRequest(
                 method="GET",
@@ -33,11 +39,48 @@ class NonkycRestExchangeClient(ExchangeClient):
         payload = response.get("data", response.get("result", response))
         if not isinstance(payload, dict):
             raise RestError(f"Unexpected orderbook payload for {symbol}: {payload}")
-        bids = self._extract_orderbook_prices(payload.get("bids", []))
-        asks = self._extract_orderbook_prices(payload.get("asks", []))
+        bids = self._extract_orderbook_levels(payload.get("bids", []))
+        asks = self._extract_orderbook_levels(payload.get("asks", []))
         if not bids or not asks:
             raise RestError(f"Orderbook data missing for {symbol}")
-        return max(bids), min(asks)
+        best_bid = max(bids, key=lambda x: x[0])
+        best_ask = min(asks, key=lambda x: x[0])
+        return best_bid[0], best_ask[0], best_bid[1], best_ask[1]
+
+    def get_recent_trades(self, symbol: str, limit: int = 200) -> list[dict]:
+        # GET /trades?market={symbol} — official endpoint, paginated by trade ID via `since`
+        try:
+            response = self._rest.send(
+                RestRequest(method="GET", path="/trades", params={"market": symbol})
+            )
+            payload = response.get("data", response.get("result", response))
+            if isinstance(payload, list):
+                return self._parse_trades(payload)
+        except Exception:
+            pass
+        return []
+
+    @staticmethod
+    def _parse_trades(raw: list) -> list[dict]:
+        trades = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            ts_raw = entry.get(
+                "time", entry.get("timestamp", entry.get("ts", entry.get("created_at")))
+            )
+            price_raw = entry.get("price", entry.get("rate"))
+            if ts_raw is None or price_raw is None:
+                continue
+            try:
+                ts = float(ts_raw)
+                # NonKYC timestamps may be in milliseconds; normalise to seconds
+                if ts > 1e12:
+                    ts /= 1000.0
+                trades.append({"ts": ts, "price": str(price_raw)})
+            except (ValueError, TypeError):
+                continue
+        return trades
 
     def place_limit(
         self,
@@ -197,23 +240,27 @@ class NonkycRestExchangeClient(ExchangeClient):
         return balances
 
     @staticmethod
-    def _extract_orderbook_prices(levels: Any) -> list[Decimal]:
-        prices: list[Decimal] = []
+    def _extract_orderbook_levels(levels: Any) -> list[tuple[Decimal, Decimal]]:
+        result: list[tuple[Decimal, Decimal]] = []
         if not isinstance(levels, list):
-            return prices
+            return result
         for level in levels:
-            price = None
+            price_raw = None
+            qty_raw = None
             if isinstance(level, dict):
-                price = level.get("price")
-            elif isinstance(level, (list, tuple)) and level:
-                price = level[0]
-            if price is None:
+                price_raw = level.get("price")
+                qty_raw = level.get("quantity", level.get("amount", level.get("qty", "0")))
+            elif isinstance(level, (list, tuple)) and len(level) >= 2:
+                price_raw, qty_raw = level[0], level[1]
+            elif isinstance(level, (list, tuple)) and len(level) == 1:
+                price_raw, qty_raw = level[0], "0"
+            if price_raw is None:
                 continue
             try:
-                prices.append(Decimal(str(price)))
+                result.append((Decimal(str(price_raw)), Decimal(str(qty_raw or "0"))))
             except (ValueError, TypeError, InvalidOperation):
                 continue
-        return prices
+        return result
 
     @staticmethod
     def _extract_decimal(payload: Any, keys: tuple[str, ...]) -> Decimal | None:

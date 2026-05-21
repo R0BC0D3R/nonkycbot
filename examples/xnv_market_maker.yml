@@ -1,0 +1,77 @@
+# XNV Advanced Market Maker
+# Dual ladder MM on XNV_USDT + XNV_XMR, with trend overlay and 2-leg arb.
+#
+# HOW TO USE:
+#   1. Store credentials in OS keychain:
+#      python scripts/nonkyc_store_credentials.py --api-key "..." --api-secret "..."
+#   2. Run:
+#      python bots/run_xnv_mm.py examples/xnv_market_maker.yml
+#   3. Dry-run first to verify order placement logic:
+#      python bots/run_xnv_mm.py examples/xnv_market_maker.yml --dry-run
+
+base_url: "https://api.nonkyc.io/api/v2"
+
+# Trading pairs
+symbol_usdt: "XNV_USDT"
+symbol_xmr:  "XNV_XMR"
+
+# Per-pair tick/step precision and fees
+pairs:
+  XNV_USDT:
+    tick_size:    "0.0001"      # bid/ask show 4 decimal places (e.g. 0.1820)
+    step_size:    "0.0001"      # base_volume shows 4 decimal places
+    fee_rate:     "0.001"
+    min_notional: "0.01"
+  XNV_XMR:
+    tick_size:    "0.00000001"  # XNV/XMR ≈ 0.0009 — verify from ticker/XNV_XMR
+    step_size:    "0.0001"
+    fee_rate:     "0.001"
+    min_notional: "0.000001"
+
+# ── Ladder ────────────────────────────────────────────────────────────────
+base_order_size: "10"          # XNV per level-0 order
+num_levels: 5
+level_0_inside_pct: "0.10"    # Level 0 is 10% of spread inside best bid/ask
+level_spacing_pct:  "0.50"    # Each deeper level is 0.5x spread further from mid
+size_step_factor:   "0.5"     # Level k size = base * (1 + k * 0.5)
+                               #   L0=1.0x  L1=1.5x  L2=2.0x  L3=2.5x  L4=3.0x
+ladder_reprice_threshold_pct: "0.002"   # Rebuild if mid moves 0.2%
+max_order_age_sec: 120
+
+# ── Inventory (3-asset target) ────────────────────────────────────────────
+inventory_target:
+  XNV:  "0.60"
+  USDT: "0.30"
+  XMR:  "0.10"
+inventory_tolerance_pct: "0.05"   # Start skewing when off-target by 5%
+inventory_skew_pct:       "0.20"  # Shift ladder center by up to 20% of spread
+
+# ── Trend overlay ─────────────────────────────────────────────────────────
+trend_threshold:  "0.003"    # 0.3% weighted move triggers directional bias
+trend_deadzone:   "0.001"    # Signal must drop below 0.1% to return to neutral
+ladder_shift_pct: "0.30"     # Shift ladder center by 30% of spread when trending
+
+# Taker bites on XNV_USDT only
+taker_bite_size_factor:  "0.30"  # 0.3x base_order_size per bite
+taker_bite_interval_sec: 300     # One bite at most every 5 minutes
+taker_max_exposure:      "5.0"   # Stop biting after 5x base_order_size accumulated
+
+# ── Arbitrage ─────────────────────────────────────────────────────────────
+arb_z_threshold:    "2.0"    # Z-score of implied rate deviation to trigger arb
+arb_min_profit_pct: "0.002"  # 0.2% minimum net profit after fees
+arb_max_order_size: "50"     # XNV — hard cap per arb execution
+arb_depth_pct:      "0.30"   # Cap at 30% of available depth at best bid/ask
+arb_cooldown_sec:   60       # Minimum seconds between arb executions
+arb_ratio_window:   100      # Samples used for rolling mean/std of implied rate
+arb_retry_ticks:    5        # Retry stuck leg 2 this many times before giving up
+
+# ── Polling ───────────────────────────────────────────────────────────────
+poll_interval_sec:  15
+balance_refresh_sec: 30
+
+# ── REST settings ─────────────────────────────────────────────────────────
+rest_timeout_sec: 30.0
+rest_retries: 3
+
+# ── State persistence ─────────────────────────────────────────────────────
+state_path: "state/xnv_mm_state.json"

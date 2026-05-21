@@ -31,6 +31,15 @@ class ExchangeClient(Protocol):
     def get_orderbook_top(self, symbol: str) -> tuple[Decimal, Decimal]:
         """Return the best bid and best ask for a symbol."""
 
+    def get_orderbook_top_with_qty(
+        self, symbol: str
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+        """Return (best_bid_price, best_ask_price, best_bid_qty, best_ask_qty)."""
+
+    def get_recent_trades(self, symbol: str, limit: int = 200) -> list[dict]:
+        """Return recent trades as list of {ts: float, price: str}.
+        Returns empty list if the endpoint is unavailable."""
+
     def place_limit(
         self,
         symbol: str,

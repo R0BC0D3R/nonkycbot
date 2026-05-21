@@ -326,15 +326,15 @@ class GridEngine:
             size = (size * jitter).quantize(
                 Decimal(10) ** -qty_dec, rounding=ROUND_DOWN
             )
-            if size <= _ZERO:
-                break
-            # Enforce minimum order notional (with safety buffer to avoid
-            # exchange rejection due to rounding at the boundary)
+            # Enforce minimum order notional before the zero-size guard so that
+            # a jitter-rounded-to-zero size still gets bumped up correctly.
             min_notional = self._cfg.min_order_notional * _NOTIONAL_BUFFER
             if price > _ZERO and price * size < min_notional:
                 size = (min_notional / price).quantize(
                     Decimal(10) ** -qty_dec, rounding=ROUND_UP
                 )
+            if size <= _ZERO:
+                break
             levels.append(
                 GridLevel(
                     index=idx,
