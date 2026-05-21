@@ -246,34 +246,42 @@ class XnvMarketMakerStrategy:
         """Pre-populate price history from exchange trade history on startup.
 
         Fetches the last 2h of trades for XNV_USDT so the 3m/15m/1h trend
-        signal is ready immediately rather than warming up over time.
-        Falls back silently if the endpoint is unavailable.
+        signal is ready immediately. If no trade history is available (common
+        for low-volume markets), seeds a single anchor point from the live mid
+        price so the 3m signal becomes usable after ~3 min of live polling.
         """
         now = time.time()
         trades = self.client.get_recent_trades(self.config.symbol_usdt, limit=500)
-        if not trades:
-            LOGGER.info(
-                "Trade history unavailable; trend signal will warm up over %.0f min",
-                LOOKBACK_1H / 60,
-            )
-            return
 
         added = 0
-        for t in trades:
-            ts = t.get("ts", 0.0)
-            price_str = t.get("price")
-            if not ts or not price_str or now - ts > HISTORY_MAX_AGE:
-                continue
+        if trades:
+            for t in trades:
+                ts = t.get("ts", 0.0)
+                price_str = t.get("price")
+                if not ts or not price_str or now - ts > HISTORY_MAX_AGE:
+                    continue
+                try:
+                    self.state.price_history.append(
+                        PricePoint(ts=ts, value=Decimal(price_str))
+                    )
+                    added += 1
+                except Exception:
+                    continue
+            self.state.price_history.sort(key=lambda p: p.ts)
+            LOGGER.info("Seeded price history with %d trade points", added)
+        else:
+            # No trade history available — anchor to current mid price so the
+            # 3m signal warms up after ~3 min rather than ~60 min.
             try:
-                self.state.price_history.append(
-                    PricePoint(ts=ts, value=Decimal(price_str))
+                mid = self.client.get_mid_price(self.config.symbol_usdt)
+                self.state.price_history.append(PricePoint(ts=now, value=mid))
+                LOGGER.info(
+                    "No trade history available; anchored to current mid %.6s — "
+                    "3m trend signal ready in ~3 min",
+                    mid,
                 )
-                added += 1
-            except Exception:
-                continue
-
-        self.state.price_history.sort(key=lambda p: p.ts)
-        LOGGER.info("Seeded price history with %d trade points", added)
+            except Exception as exc:
+                LOGGER.warning("Could not anchor price history: %s", exc)
 
     # ── Main loop ──────────────────────────────────────────────────────────
 
