@@ -32,15 +32,15 @@ pairs:
 base_order_size: "50"          # XNV per level-0 order (USDT pair)
 num_levels: 5
 level_0_offset_pct: "0.003"   # L0 distance from mid = 0.3% of mid price
-level_spacing_pct:  "0.012"   # Each deeper level adds 1.2% of mid (~22 ticks apart)
-                               #   @ 0.1823: L0=±0.0005, L1=±0.0027, L2=±0.0049,
-                               #             L3=±0.0071, L4=±0.0093
+level_spacing_pct:  "0.015"   # Each deeper level adds 1.5% of mid (~27 ticks apart)
+                               #   @ 0.1823: L0=±0.0005, L1=±0.0032, L2=±0.0060,
+                               #             L3=±0.0087, L4=±0.0115
 size_step_factor:   "0.5"     # Level k size = base * (1 + k * 0.5)
                                #   L0=1.0x  L1=1.5x  L2=2.0x  L3=2.5x  L4=3.0x
 xmr_qty_fraction:   "0.60"    # XNV_XMR orders = 60% of USDT order size
 order_size_jitter_pct: "0.07" # ±7% random per-order size variation
 level_reprice_threshold_pct: "0.004"    # Reprice a level only if it drifts >0.4% from ideal
-max_order_age_sec: 120
+max_order_age_sec: 300
 
 # ── Inventory (3-asset target) ────────────────────────────────────────────
 inventory_target:
