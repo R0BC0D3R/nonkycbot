@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -12,6 +13,8 @@ from strategies.xnv_market_maker import (
     XnvMarketMakerConfig,
     XnvMarketMakerStrategy,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 
 def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
@@ -97,13 +100,11 @@ def run_xnv_mm(config: dict, state_path: Path) -> None:
     strategy.cancel_all_on_startup()
     strategy.seed_price_history()
 
-    print(
-        f"XNV market maker running. "
-        f"pairs={strategy.config.symbol_usdt}+{strategy.config.symbol_xmr} "
-        f"levels={strategy.config.num_levels} "
-        f"poll={strategy.config.poll_interval_sec}s "
-        f"mode={strategy.config.mode}  "
-        f"exposure={strategy.state.trend_exposure_xnv}"
+    LOGGER.info(
+        "XNV market maker running. pairs=%s+%s levels=%d poll=%ss mode=%s  exposure=%s",
+        strategy.config.symbol_usdt, strategy.config.symbol_xmr,
+        strategy.config.num_levels, strategy.config.poll_interval_sec,
+        strategy.config.mode, strategy.state.trend_exposure_xnv,
     )
 
     try:
@@ -113,6 +114,6 @@ def run_xnv_mm(config: dict, state_path: Path) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        print("\nShutting down — cancelling all open orders...")
+        LOGGER.info("Shutting down — cancelling all open orders...")
         strategy.cancel_all_on_startup()
         strategy.close()
