@@ -108,6 +108,13 @@ class SanitizingFormatter(logging.Formatter):
         return super().format(record_copy)
 
 
+class _ShortNameFilter(logging.Filter):
+    """Adds %(shortname)s — the last dotted component of the logger name."""
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.shortname = record.name.rsplit(".", 1)[-1]  # type: ignore[attr-defined]
+        return True
+
+
 class DailyFileHandler(logging.FileHandler):
     """Writes to a date-stamped file (e.g. xnv_mm.2026-05-22.log).
     Opens a new file automatically when UTC date changes mid-run."""
@@ -166,19 +173,22 @@ def setup_logging(
         formatter = StructuredFormatter()
     elif sanitize:
         formatter = SanitizingFormatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            "%(asctime)s [%(levelname)s] %(shortname)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     else:
         formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            "%(asctime)s [%(levelname)s] %(shortname)s: %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S",
         )
+
+    short_name_filter = _ShortNameFilter()
 
     # Console handler — filtered to console_level (default INFO)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(console_level)
     console_handler.setFormatter(formatter)
+    console_handler.addFilter(short_name_filter)
     root_logger.addHandler(console_handler)
 
     # File handler — always DEBUG; switches to a new date-stamped file at UTC midnight.
@@ -187,6 +197,7 @@ def setup_logging(
             file_handler = DailyFileHandler(log_file, encoding="utf-8")
             file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(formatter)
+            file_handler.addFilter(short_name_filter)
             root_logger.addHandler(file_handler)
         except Exception as exc:
             root_logger.warning(
