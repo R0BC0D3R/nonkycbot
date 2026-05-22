@@ -883,7 +883,7 @@ class XnvMarketMakerStrategy:
             profit_pct = usdt_bid / (xmr_ask * mean) - Decimal("1") - total_fees
             if profit_pct < self.config.arb_min_profit_pct:
                 return False
-            size = self._arb_size(usdt_bid_qty, xmr_ask_qty)
+            size = self._arb_size(usdt_bid_qty, xmr_ask_qty, xmr_ask)
             if size <= 0:
                 return False
             LOGGER.info(
@@ -899,7 +899,7 @@ class XnvMarketMakerStrategy:
             profit_pct = xmr_bid * mean / usdt_ask - Decimal("1") - total_fees
             if profit_pct < self.config.arb_min_profit_pct:
                 return False
-            size = self._arb_size(usdt_ask_qty, xmr_bid_qty)
+            size = self._arb_size(usdt_ask_qty, xmr_bid_qty, xmr_bid)
             if size <= 0:
                 return False
             LOGGER.info(
@@ -910,14 +910,22 @@ class XnvMarketMakerStrategy:
 
         return False
 
-    def _arb_size(self, qty1: Decimal, qty2: Decimal) -> Decimal:
+    def _arb_size(self, qty1: Decimal, qty2: Decimal, xmr_price: Decimal) -> Decimal:
         step = self.config.pairs[self.config.symbol_usdt].step_size
         size = min(
             self.config.arb_max_order_size,
             qty1 * self.config.arb_depth_pct,
             qty2 * self.config.arb_depth_pct,
         )
-        return max(Decimal("0"), _quantize_qty(size, step))
+        size = _quantize_qty(size, step)
+        # Enforce XMR leg minimum notional: bump up if below exchange floor
+        xmr_min = self.config.pairs[self.config.symbol_xmr].min_notional
+        if xmr_min > 0 and xmr_price > 0:
+            min_xnv = (xmr_min / xmr_price / step).to_integral_value(rounding=ROUND_UP) * step
+            size = max(size, min_xnv)
+        if size > self.config.arb_max_order_size:
+            return Decimal("0")
+        return max(Decimal("0"), size)
 
     def _execute_arb(
         self,
