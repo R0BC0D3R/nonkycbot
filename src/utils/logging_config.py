@@ -155,9 +155,10 @@ def setup_logging(
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
 
-    # Set level
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    root_logger.setLevel(log_level)
+    # Console level from --log-level (default INFO).
+    # File always captures DEBUG so nothing is lost.
+    console_level = getattr(logging, level.upper(), logging.INFO)
+    root_logger.setLevel(logging.DEBUG)  # allow DEBUG to reach file handler
 
     # Choose formatter
     formatter: logging.Formatter
@@ -174,18 +175,17 @@ def setup_logging(
             datefmt="%Y-%m-%d %H:%M:%S",
         )
 
-    # Console handler
+    # Console handler — filtered to console_level (default INFO)
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(log_level)
+    console_handler.setLevel(console_level)
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    # File handler (if specified) — writes to a date-stamped file, e.g. xnv_mm.2026-05-22.log.
-    # Switches to a new file automatically at UTC midnight.
+    # File handler — always DEBUG; switches to a new date-stamped file at UTC midnight.
     if log_file:
         try:
             file_handler = DailyFileHandler(log_file, encoding="utf-8")
-            file_handler.setLevel(log_level)
+            file_handler.setLevel(logging.DEBUG)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)
         except Exception as exc:

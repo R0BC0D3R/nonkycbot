@@ -80,8 +80,9 @@ rest_retries: 3
 # ── State persistence ─────────────────────────────────────────────────────
 state_path: "state/xnv_mm_state.json"
 
-# Logging: --log-level controls both screen and file at the same level (default INFO).
-# Set log_file to a path to enable file logging, or remove/comment it out to disable.
+# Logging: --log-level controls the terminal (default INFO).
+# File always captures DEBUG regardless of --log-level.
+# Remove or comment out log_file to disable file logging entirely.
 # File is date-stamped automatically: logs/xnv_mm.2026-05-22.log
 log_file:   "logs/xnv_mm.log"
 fills_csv:  "logs/xnv_fills.csv"
