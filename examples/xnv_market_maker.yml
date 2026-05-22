@@ -80,3 +80,4 @@ rest_retries: 3
 # ── State persistence ─────────────────────────────────────────────────────
 state_path: "state/xnv_mm_state.json"
 log_file:   "logs/xnv_mm.log"
+fills_csv:  "logs/xnv_fills.csv"

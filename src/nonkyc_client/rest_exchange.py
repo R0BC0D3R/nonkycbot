@@ -264,7 +264,14 @@ class NonkycRestExchangeClient(ExchangeClient):
             price_raw = entry.get("price")
             qty_raw = entry.get("quantity")
             fee_raw = entry.get("fee")
-            order_id = str(next((v for k, v in entry.items() if k.lower() in ("orderid", "order_id")), ""))
+            raw_oid = next((v for k, v in entry.items() if k.lower() in ("orderid", "order_id")), "")
+            if isinstance(raw_oid, list):
+                order_id = str(raw_oid[0]) if raw_oid else ""
+                order_id_2 = str(raw_oid[1]) if len(raw_oid) > 1 else ""
+            else:
+                order_id = str(raw_oid)
+                order_id_2 = ""
+            is_self_trade = bool(order_id_2) or "&" in str(entry.get("side", ""))
             trade_id = str(entry.get("id", ""))
             ts_raw = entry.get("timestamp", 0)
             try:
@@ -278,6 +285,8 @@ class NonkycRestExchangeClient(ExchangeClient):
             trades.append({
                 "trade_id": trade_id,
                 "order_id": order_id,
+                "order_id_2": order_id_2,
+                "is_self_trade": is_self_trade,
                 "symbol": symbol,
                 "side": side,
                 "price": str(price_raw),

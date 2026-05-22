@@ -84,6 +84,7 @@ def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
         poll_interval_sec=float(config.get("poll_interval_sec", 15)),
         balance_refresh_sec=float(config.get("balance_refresh_sec", 30)),
         mode=config.get("mode", "live"),
+        fills_csv=config.get("fills_csv"),
     )
 
     exchange = build_exchange_client(config)
@@ -114,3 +115,4 @@ def run_xnv_mm(config: dict, state_path: Path) -> None:
     finally:
         print("\nShutting down — cancelling all open orders...")
         strategy.cancel_all_on_startup()
+        strategy.close()

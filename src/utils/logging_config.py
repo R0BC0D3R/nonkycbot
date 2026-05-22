@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
-import logging.handlers
+import os
 import sys
 import threading
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -107,6 +108,33 @@ class SanitizingFormatter(logging.Formatter):
         return super().format(record_copy)
 
 
+class DailyFileHandler(logging.FileHandler):
+    """Writes to a date-stamped file (e.g. xnv_mm.2026-05-22.log).
+    Opens a new file automatically when UTC date changes mid-run."""
+
+    def __init__(self, base_path: str, encoding: str = "utf-8") -> None:
+        self._base_path = base_path  # e.g. "logs/xnv_mm.log"
+        self._log_date = ""
+        path = self._dated_path()
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        super().__init__(path, mode="a", encoding=encoding, delay=False)
+
+    def _dated_path(self) -> str:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self._log_date = today
+        stem, _, ext = self._base_path.rpartition(".")
+        return f"{stem}.{today}.{ext}"
+
+    def emit(self, record: logging.LogRecord) -> None:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != self._log_date:
+            self.close()
+            new_path = os.path.abspath(self._dated_path())
+            self.baseFilename = new_path
+            self.stream = self._open()
+        super().emit(record)
+
+
 def setup_logging(
     level: str = "INFO",
     *,
@@ -152,23 +180,11 @@ def setup_logging(
     console_handler.setFormatter(formatter)
     root_logger.addHandler(console_handler)
 
-    # File handler (if specified) — rotates daily at midnight, keeps 30 days.
-    # Current day: logs/xnv_mm.log  Previous days: logs/xnv_mm.log.2026-05-21
+    # File handler (if specified) — writes to a date-stamped file, e.g. xnv_mm.2026-05-22.log.
+    # Switches to a new file automatically at UTC midnight.
     if log_file:
         try:
-            from pathlib import Path
-
-            log_path = Path(log_file)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-
-            file_handler = logging.handlers.TimedRotatingFileHandler(
-                log_file,
-                when="midnight",
-                interval=1,
-                backupCount=30,
-                encoding="utf-8",
-            )
-            file_handler.suffix = "%Y-%m-%d"
+            file_handler = DailyFileHandler(log_file, encoding="utf-8")
             file_handler.setLevel(log_level)
             file_handler.setFormatter(formatter)
             root_logger.addHandler(file_handler)

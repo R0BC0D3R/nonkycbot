@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import random
@@ -10,6 +11,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from enum import Enum
 from pathlib import Path
@@ -80,6 +82,7 @@ class XnvMarketMakerConfig:
     poll_interval_sec: float
     balance_refresh_sec: float
     mode: str
+    fills_csv: str | None = None
 
 
 # ── State ──────────────────────────────────────────────────────────────────
@@ -156,6 +159,12 @@ class XnvMarketMakerStrategy:
         # pair -> deque of (side, level_index) pending reprice; one processed per tick
         self._reprice_queue: dict[str, deque[tuple[str, int]]] = {}
         self._bite_skip_reason: str = ""  # last logged skip reason; suppresses repeats
+        # order_id -> (order_type, level_str) for CSV annotation
+        self._order_meta: dict[str, tuple[str, str]] = {}
+        # fills CSV writer state (lazy-opened, date-stamped)
+        self._fills_file: Any = None
+        self._fills_writer: Any = None
+        self._fills_csv_date: str = ""
 
     # ── Persistence ────────────────────────────────────────────────────────
 
@@ -587,6 +596,7 @@ class XnvMarketMakerStrategy:
         # Subtract a small random age so not all orders placed at the same time
         # expire simultaneously, spreading out age-based reprices.
         stagger = random.uniform(0, 30.0)
+        self._record_order_meta(order_id, "ladder", str(level))
         self.state.open_orders.setdefault(pair, {}).setdefault(side, {})[
             level
         ] = LevelOrder(
@@ -814,6 +824,7 @@ class XnvMarketMakerStrategy:
                 client_id=client_id,
                 strict_validate=False,
             )
+            self._record_order_meta(order_id, "taker_bite")
             self.state.last_bite_order_id = order_id
             self.state.last_bite_side = side
             self.state.last_bite_ts = now
@@ -971,6 +982,7 @@ class XnvMarketMakerStrategy:
                 self.config.symbol_xmr, xmr_side, xmr_price, size,
                 client_id=xmr_cid, strict_validate=False,
             )
+            self._record_order_meta(xmr_oid, "arb")
             LOGGER.info(
                 "Arb %s leg1 XNV_XMR %s qty=%s @ %s → %s",
                 direction, xmr_side, size, xmr_price, xmr_oid,
@@ -986,6 +998,7 @@ class XnvMarketMakerStrategy:
                 self.config.symbol_usdt, usdt_side, usdt_price, size,
                 client_id=usdt_cid, strict_validate=False,
             )
+            self._record_order_meta(usdt_oid, "arb")
             LOGGER.info(
                 "Arb %s leg2 XNV_USDT %s qty=%s @ %s → %s",
                 direction, usdt_side, size, usdt_price, usdt_oid,
@@ -1029,6 +1042,7 @@ class XnvMarketMakerStrategy:
                 stuck.pair, stuck.side, price, stuck.qty,
                 client_id=cid, strict_validate=False,
             )
+            self._record_order_meta(oid, "arb")
             LOGGER.info("Stuck arb resolved: %s %s @ %s → %s", stuck.side, stuck.qty, price, oid)
             self.state.arb_stuck = None
         except RestError as exc:
@@ -1110,6 +1124,49 @@ class XnvMarketMakerStrategy:
             LOGGER.debug("Fill check %s: %s", order_id, exc)
         return Decimal("0")
 
+    def close(self) -> None:
+        if self._fills_file is not None:
+            try:
+                self._fills_file.close()
+            except Exception:
+                pass
+            self._fills_file = None
+            self._fills_writer = None
+
+    def _record_order_meta(self, order_id: str, order_type: str, level: str = "") -> None:
+        self._order_meta[order_id] = (order_type, level)
+
+    _FILLS_FIELDNAMES = [
+        "timestamp", "trade_id", "pair", "side",
+        "quantity", "price", "fee", "notional",
+        "order_id", "order_id_2", "order_type", "level", "self_trade",
+    ]
+
+    def _get_fills_writer(self, today: str):
+        """Return the CSV DictWriter for today, opening/rotating the file as needed."""
+        if not self.config.fills_csv:
+            return None
+        if self._fills_writer is not None and self._fills_csv_date == today:
+            return self._fills_writer
+        # Date changed or first open — close old file, open new one.
+        if self._fills_file is not None:
+            try:
+                self._fills_file.close()
+            except Exception:
+                pass
+        base = self.config.fills_csv  # e.g. "logs/xnv_fills.csv"
+        stem, _, ext = base.rpartition(".")
+        path = Path(f"{stem}.{today}.{ext}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        is_new = not path.exists() or path.stat().st_size == 0
+        self._fills_file = open(path, "a", newline="", encoding="utf-8")
+        self._fills_writer = csv.DictWriter(self._fills_file, fieldnames=self._FILLS_FIELDNAMES)
+        if is_new:
+            self._fills_writer.writeheader()
+            self._fills_file.flush()
+        self._fills_csv_date = today
+        return self._fills_writer
+
     def _poll_account_trades(self, now: float) -> None:
         """Fetch new account trades since last seen and log every fill."""
         # On first call, anchor to now so we don't replay history.
@@ -1137,11 +1194,44 @@ class XnvMarketMakerStrategy:
             qty = t.get("quantity", "?")
             fee = t.get("fee")
             order_id = t.get("order_id", "?")
+            order_id_2 = t.get("order_id_2", "")
+            is_self = t.get("is_self_trade", False)
             fee_str = f"  fee={fee}" if fee else ""
             LOGGER.info(
                 "TRADE [%s] %s qty=%s @ %s%s  order=%s",
-                symbol, side, qty, price, fee_str, order_id,
+                symbol, side, qty, price, fee_str,
+                f"[{order_id}, {order_id_2}]" if order_id_2 else order_id,
             )
+            # Write to fills CSV
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            writer = self._get_fills_writer(today)
+            if writer is not None:
+                order_type, level = self._order_meta.get(order_id, ("", ""))
+                if not order_type and order_id_2:
+                    order_type, level = self._order_meta.get(order_id_2, ("", ""))
+                try:
+                    notional = str(Decimal(price) * Decimal(qty))
+                except Exception:
+                    notional = ""
+                ts_str = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime(
+                    "%Y-%m-%dT%H:%M:%S.%f"
+                )[:-3] + "Z"
+                writer.writerow({
+                    "timestamp": ts_str,
+                    "trade_id": t.get("trade_id", ""),
+                    "pair": symbol.replace("/", "_"),
+                    "side": side.lower(),
+                    "quantity": qty,
+                    "price": price,
+                    "fee": fee or "",
+                    "notional": notional,
+                    "order_id": order_id,
+                    "order_id_2": order_id_2,
+                    "order_type": order_type,
+                    "level": level,
+                    "self_trade": "true" if is_self else "false",
+                })
+                self._fills_file.flush()
 
         self.state.last_trade_ts_ms = max_ts + 1  # +1ms so next poll excludes this trade
 
