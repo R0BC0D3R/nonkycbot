@@ -83,6 +83,10 @@ class XnvMarketMakerConfig:
     balance_refresh_sec: float
     mode: str
     fills_csv: str | None = None
+    # Cost-basis sell scaling
+    cost_basis_scale_range_pct: Decimal = field(default_factory=lambda: Decimal("0.20"))
+    cost_basis_min_sell_factor: Decimal = field(default_factory=lambda: Decimal("0.20"))
+    cost_basis_max_sell_factor: Decimal = field(default_factory=lambda: Decimal("2.0"))
 
 
 # ── State ──────────────────────────────────────────────────────────────────
@@ -125,6 +129,8 @@ class XnvMarketMakerState:
     )
     trend_state: TrendState = TrendState.NEUTRAL
     trend_exposure_xnv: Decimal = field(default_factory=lambda: Decimal("0"))
+    avg_cost_xnv: Decimal = field(default_factory=lambda: Decimal("0"))
+    held_xnv_qty: Decimal = field(default_factory=lambda: Decimal("0"))
     last_bite_ts: float = 0.0
     last_bite_order_id: str | None = None
     last_bite_side: str | None = None
@@ -203,6 +209,8 @@ class XnvMarketMakerStrategy:
             open_orders=open_orders,
             trend_state=TrendState(raw.get("trend_state", "neutral")),
             trend_exposure_xnv=Decimal(str(raw.get("trend_exposure_xnv", "0"))),
+            avg_cost_xnv=Decimal(str(raw.get("avg_cost_xnv", "0"))),
+            held_xnv_qty=Decimal(str(raw.get("held_xnv_qty", "0"))),
             last_bite_ts=float(raw.get("last_bite_ts", 0.0)),
             last_bite_order_id=raw.get("last_bite_order_id"),
             last_bite_side=raw.get("last_bite_side"),
@@ -242,6 +250,8 @@ class XnvMarketMakerStrategy:
             "open_orders": open_orders_raw,
             "trend_state": self.state.trend_state.value,
             "trend_exposure_xnv": str(self.state.trend_exposure_xnv),
+            "avg_cost_xnv": str(self.state.avg_cost_xnv),
+            "held_xnv_qty": str(self.state.held_xnv_qty),
             "last_bite_ts": self.state.last_bite_ts,
             "last_bite_order_id": self.state.last_bite_order_id,
             "last_bite_side": self.state.last_bite_side,
@@ -486,6 +496,26 @@ class XnvMarketMakerStrategy:
 
         result: dict[tuple[str, int], tuple[Decimal, Decimal]] = {}
 
+        # Sell-size scale based on price vs average cost basis.
+        # Below cost: scale down toward 0.15× (keep minimal book presence, avoid selling at loss).
+        # Above cost: scale up toward 2.0× (accelerate deleveraging while profitable).
+        # Gate is disabled when avg_cost_xnv == 0 (no tracked history yet).
+        avg_cost = self.state.avg_cost_xnv
+        usdt_ref = self._current_mids.get(self.config.symbol_usdt, Decimal("0"))
+        if avg_cost > 0 and self.state.held_xnv_qty > 0 and usdt_ref > 0:
+            ratio = (usdt_ref - avg_cost) / avg_cost
+            scale_range = self.config.cost_basis_scale_range_pct
+            min_f = self.config.cost_basis_min_sell_factor
+            max_f = self.config.cost_basis_max_sell_factor
+            if ratio < 0:
+                below_slope = (Decimal("1") - min_f) / scale_range
+                sell_scale = max(min_f, Decimal("1") + ratio * below_slope)
+            else:
+                above_slope = (max_f - Decimal("1")) / scale_range
+                sell_scale = min(max_f, Decimal("1") + ratio * above_slope)
+        else:
+            sell_scale = Decimal("1")
+
         for k in range(self.config.num_levels):
             # Fixed % of mid per level — independent of current spread width.
             # offset_k is the total distance from mid as a fraction of mid.
@@ -509,7 +539,7 @@ class XnvMarketMakerStrategy:
                 return _quantize_qty(q * j, pair_cfg.step_size)
 
             buy_qty = _jittered(base_qty)
-            sell_qty = _jittered(base_qty)
+            sell_qty = _jittered(base_qty * sell_scale)
             if buy_qty <= 0 or sell_qty <= 0:
                 continue
 
@@ -801,6 +831,13 @@ class XnvMarketMakerStrategy:
             avail_xnv = self._balances.get("XNV", (Decimal("0"), Decimal("0")))[0]
             if avail_xnv < bite_qty:
                 self._log_bite_skip(f"insufficient XNV available={avail_xnv} needed={bite_qty}")
+                return
+            # Cost-basis gate: don't sell below average purchase cost.
+            avg_cost = self.state.avg_cost_xnv
+            if avg_cost > 0 and self.state.held_xnv_qty > 0 and price < avg_cost:
+                self._log_bite_skip(
+                    f"price {price} below avg_cost {avg_cost:.6f} — no sell at loss"
+                )
                 return
         else:
             avail_usdt = self._balances.get("USDT", (Decimal("0"), Decimal("0")))[0]
@@ -1133,6 +1170,22 @@ class XnvMarketMakerStrategy:
             self._fills_file = None
             self._fills_writer = None
 
+    def _update_cost_basis(self, side: str, qty: Decimal, usdt_price: Decimal) -> None:
+        """Update avg_cost_xnv / held_xnv_qty from a confirmed fill.
+
+        Self-trades must be excluded by the caller — they don't change real position.
+        For buys: weighted-average the new fill into the cost basis.
+        For sells: reduce held qty; cost basis of remaining inventory is unchanged.
+        """
+        if qty <= 0 or usdt_price <= 0:
+            return
+        if side == "buy":
+            total_cost = self.state.avg_cost_xnv * self.state.held_xnv_qty + usdt_price * qty
+            self.state.held_xnv_qty += qty
+            self.state.avg_cost_xnv = total_cost / self.state.held_xnv_qty
+        elif side == "sell":
+            self.state.held_xnv_qty = max(Decimal("0"), self.state.held_xnv_qty - qty)
+
     def _record_order_meta(self, order_id: str, order_type: str, level: str = "") -> None:
         self._order_meta[order_id] = (order_type, level)
 
@@ -1232,6 +1285,21 @@ class XnvMarketMakerStrategy:
                     "self_trade": "true" if is_self else "false",
                 })
                 self._fills_file.flush()
+
+            # Update cost basis — skip self-trades (net zero position change)
+            if not is_self:
+                pair_key = symbol.replace("/", "_")
+                fill_side = side.lower()
+                fill_qty = Decimal(str(qty))
+                if pair_key == self.config.symbol_usdt:
+                    self._update_cost_basis(fill_side, fill_qty, Decimal(str(price)))
+                elif pair_key == self.config.symbol_xmr:
+                    usdt_ref = self._current_mids.get(self.config.symbol_usdt, Decimal("0"))
+                    xmr_ref  = self._current_mids.get(self.config.symbol_xmr, Decimal("0"))
+                    if usdt_ref > 0 and xmr_ref > 0:
+                        self._update_cost_basis(
+                            fill_side, fill_qty, Decimal(str(price)) * usdt_ref / xmr_ref
+                        )
 
         self.state.last_trade_ts_ms = max_ts + 1  # +1ms so next poll excludes this trade
 

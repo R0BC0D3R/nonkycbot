@@ -86,3 +86,11 @@ state_path: "state/xnv_mm_state.json"
 # File is date-stamped automatically: logs/xnv_mm.2026-05-22.log
 log_file:   "logs/xnv_mm.log"
 fills_csv:  "logs/xnv_fills.csv"
+
+# ── Cost-basis sell scaling ────────────────────────────────────────────────
+# Ladder sell sizes scale between min/max factor over the ±range below/above avg cost.
+# At avg_cost: 1.0×. At -range: min factor. At +range: max factor.
+# Gate disabled when avg_cost_xnv == 0 in state file.
+cost_basis_scale_range_pct: "0.20"   # ±20% price range for full scale effect
+cost_basis_min_sell_factor: "0.20"   # 20% of normal size when 20%+ below cost
+cost_basis_max_sell_factor: "2.0"    # 200% of normal size when 20%+ above cost

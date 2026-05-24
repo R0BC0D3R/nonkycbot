@@ -55,6 +55,7 @@ config.local.*
 # Logs
 *.log
 logs/
+_LOGS/
 *.log.*
 
 # Test coverage

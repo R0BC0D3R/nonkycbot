@@ -88,6 +88,9 @@ def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
         balance_refresh_sec=float(config.get("balance_refresh_sec", 30)),
         mode=config.get("mode", "live"),
         fills_csv=config.get("fills_csv"),
+        cost_basis_scale_range_pct=Decimal(str(config.get("cost_basis_scale_range_pct", "0.20"))),
+        cost_basis_min_sell_factor=Decimal(str(config.get("cost_basis_min_sell_factor", "0.20"))),
+        cost_basis_max_sell_factor=Decimal(str(config.get("cost_basis_max_sell_factor", "2.0"))),
     )
 
     exchange = build_exchange_client(config)
@@ -101,10 +104,13 @@ def run_xnv_mm(config: dict, state_path: Path) -> None:
     strategy.seed_price_history()
 
     LOGGER.info(
-        "XNV market maker running. pairs=%s+%s levels=%d poll=%ss mode=%s  exposure=%s",
+        "XNV market maker running. pairs=%s+%s levels=%d poll=%ss mode=%s  "
+        "exposure=%s  avg_cost=%s  held=%s",
         strategy.config.symbol_usdt, strategy.config.symbol_xmr,
         strategy.config.num_levels, strategy.config.poll_interval_sec,
         strategy.config.mode, strategy.state.trend_exposure_xnv,
+        strategy.state.avg_cost_xnv or "unset",
+        strategy.state.held_xnv_qty,
     )
 
     try:
