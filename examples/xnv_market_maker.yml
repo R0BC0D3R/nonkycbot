@@ -87,6 +87,29 @@ state_path: "state/xnv_mm_state.json"
 log_file:   "logs/xnv_mm.log"
 fills_csv:  "logs/xnv_fills.csv"
 
+# ── Trend signal internals ────────────────────────────────────────────────
+# The trend score is a weighted average of 3 price-change windows.
+# Score > trend_threshold → UP bias (bot shifts ladder up, places buy bites).
+# Score < -trend_threshold → DOWN bias (bot shifts ladder down, places sell bites).
+# Shorter lookbacks react faster but are noisier; longer lookbacks are slower but smoother.
+trend_lookback_3m_sec:       180    # How far back the "short" window looks (seconds)
+trend_lookback_15m_sec:      900    # How far back the "medium" window looks
+trend_lookback_1h_sec:       3600   # How far back the "long" window looks
+trend_history_max_age_sec:   7200   # How long price snapshots are kept in memory (rolling window)
+# Weights must not need to sum to 1.0 — they are normalised automatically when a window
+# is unavailable (e.g. bot just started and 1h history hasn't built up yet).
+trend_weight_3m:             "0.50" # Weight given to the 3-min change
+trend_weight_15m:            "0.30" # Weight given to the 15-min change
+trend_weight_1h:             "0.20" # Weight given to the 1-hour change
+
+# ── Operational internals ─────────────────────────────────────────────────
+order_stagger_max_sec:       30     # New orders get a random age offset 0–N sec so they
+                                    # don't all hit max_order_age_sec at the same moment
+order_sync_interval_sec:     30     # How often the bot reconciles tracked orders against
+                                    # the exchange (detects fills missed by trade polling)
+arb_min_samples:             25     # Minimum ratio-history samples before arb can fire;
+                                    # prevents arb on a cold/noisy rolling mean at startup
+
 # ── Cost-basis sell scaling ────────────────────────────────────────────────
 # Ladder sell sizes scale between min/max factor over the ±range below/above avg cost.
 # At avg_cost: 1.0×. At -range: min factor. At +range: max factor.

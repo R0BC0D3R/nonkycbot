@@ -22,14 +22,6 @@ from nonkyc_client.rest import RestError
 
 LOGGER = logging.getLogger("nonkyc_bot.strategy.xnv_market_maker")
 
-LOOKBACK_3M = 180.0
-LOOKBACK_15M = 900.0
-LOOKBACK_1H = 3600.0
-HISTORY_MAX_AGE = 7200.0  # 2h rolling window
-
-_W3M = Decimal("0.50")
-_W15M = Decimal("0.30")
-_W1H = Decimal("0.20")
 
 
 # ── Config ─────────────────────────────────────────────────────────────────
@@ -87,6 +79,18 @@ class XnvMarketMakerConfig:
     cost_basis_scale_range_pct: Decimal = field(default_factory=lambda: Decimal("0.20"))
     cost_basis_min_sell_factor: Decimal = field(default_factory=lambda: Decimal("0.20"))
     cost_basis_max_sell_factor: Decimal = field(default_factory=lambda: Decimal("2.0"))
+    # Trend signal internals
+    trend_lookback_3m_sec: float = 180.0
+    trend_lookback_15m_sec: float = 900.0
+    trend_lookback_1h_sec: float = 3600.0
+    trend_history_max_age_sec: float = 7200.0
+    trend_weight_3m: Decimal = field(default_factory=lambda: Decimal("0.50"))
+    trend_weight_15m: Decimal = field(default_factory=lambda: Decimal("0.30"))
+    trend_weight_1h: Decimal = field(default_factory=lambda: Decimal("0.20"))
+    # Operational internals
+    order_stagger_max_sec: float = 30.0
+    order_sync_interval_sec: float = 30.0
+    arb_min_samples: int = 25
 
 
 # ── State ──────────────────────────────────────────────────────────────────
@@ -295,7 +299,7 @@ class XnvMarketMakerStrategy:
             for t in trades:
                 ts = t.get("ts", 0.0)
                 price_str = t.get("price")
-                if not ts or not price_str or now - ts > HISTORY_MAX_AGE:
+                if not ts or not price_str or now - ts > self.config.trend_history_max_age_sec:
                     continue
                 try:
                     self.state.price_history.append(
@@ -352,8 +356,7 @@ class XnvMarketMakerStrategy:
         self._settle_previous_bite(now)
         # Poll account trades for comprehensive fill logging (every tick)
         self._poll_account_trades(now)
-        # Sync ladder order statuses every 30s using list_open_orders comparison
-        if now - self._last_sync_ts >= 30.0:
+        if now - self._last_sync_ts >= self.config.order_sync_interval_sec:
             self._sync_all_order_statuses()
             self._last_sync_ts = now
 
@@ -643,7 +646,7 @@ class XnvMarketMakerStrategy:
 
         # Subtract a small random age so not all orders placed at the same time
         # expire simultaneously, spreading out age-based reprices.
-        stagger = random.uniform(0, 30.0)
+        stagger = random.uniform(0, self.config.order_stagger_max_sec)
         self._record_order_meta(order_id, "ladder", str(level))
         self.state.open_orders.setdefault(pair, {}).setdefault(side, {})[
             level
@@ -687,7 +690,7 @@ class XnvMarketMakerStrategy:
 
     def _record_price_snapshot(self, mid: Decimal, now: float) -> None:
         self.state.price_history.append(PricePoint(ts=now, value=mid))
-        cutoff = now - HISTORY_MAX_AGE
+        cutoff = now - self.config.trend_history_max_age_sec
         self.state.price_history = [
             p for p in self.state.price_history if p.ts >= cutoff
         ]
@@ -705,27 +708,30 @@ class XnvMarketMakerStrategy:
             return None
         current = self.state.price_history[-1].value
 
-        p3m = self._price_at(LOOKBACK_3M, now)
+        p3m = self._price_at(self.config.trend_lookback_3m_sec, now)
         if p3m is None or p3m == 0:
-            return None  # Need at least 3m to emit any signal
+            return None  # Need at least the shortest lookback to emit any signal
 
-        p15m = self._price_at(LOOKBACK_15M, now)
-        p1h = self._price_at(LOOKBACK_1H, now)
+        p15m = self._price_at(self.config.trend_lookback_15m_sec, now)
+        p1h = self._price_at(self.config.trend_lookback_1h_sec, now)
+
+        w3m = self.config.trend_weight_3m
+        w15m = self.config.trend_weight_15m
+        w1h = self.config.trend_weight_1h
 
         c3m = (current - p3m) / p3m
 
         if p15m is None or p15m == 0:
-            return c3m  # Only 3m available
+            return c3m
 
         c15m = (current - p15m) / p15m
 
         if p1h is None or p1h == 0:
-            # 3m + 15m: renormalise weights
-            total_w = _W3M + _W15M
-            return (c3m * _W3M + c15m * _W15M) / total_w
+            total_w = w3m + w15m
+            return (c3m * w3m + c15m * w15m) / total_w
 
         c1h = (current - p1h) / p1h
-        return c3m * _W3M + c15m * _W15M + c1h * _W1H
+        return c3m * w3m + c15m * w15m + c1h * w1h
 
     def _update_trend_state(self, score: Decimal | None) -> None:
         if score is None:
@@ -905,8 +911,7 @@ class XnvMarketMakerStrategy:
 
     def _arb_stats(self) -> tuple[Decimal, Decimal] | None:
         window = self.state.ratio_history[-self.config.arb_ratio_window :]
-        min_samples = max(10, self.config.arb_ratio_window // 4)
-        if len(window) < min_samples:
+        if len(window) < self.config.arb_min_samples:
             return None
         vals = [float(p.value) for p in window]
         mean = statistics.mean(vals)

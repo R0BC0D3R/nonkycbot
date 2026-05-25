@@ -91,6 +91,16 @@ def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
         cost_basis_scale_range_pct=Decimal(str(config.get("cost_basis_scale_range_pct", "0.20"))),
         cost_basis_min_sell_factor=Decimal(str(config.get("cost_basis_min_sell_factor", "0.20"))),
         cost_basis_max_sell_factor=Decimal(str(config.get("cost_basis_max_sell_factor", "2.0"))),
+        trend_lookback_3m_sec=float(config.get("trend_lookback_3m_sec", 180.0)),
+        trend_lookback_15m_sec=float(config.get("trend_lookback_15m_sec", 900.0)),
+        trend_lookback_1h_sec=float(config.get("trend_lookback_1h_sec", 3600.0)),
+        trend_history_max_age_sec=float(config.get("trend_history_max_age_sec", 7200.0)),
+        trend_weight_3m=Decimal(str(config.get("trend_weight_3m", "0.50"))),
+        trend_weight_15m=Decimal(str(config.get("trend_weight_15m", "0.30"))),
+        trend_weight_1h=Decimal(str(config.get("trend_weight_1h", "0.20"))),
+        order_stagger_max_sec=float(config.get("order_stagger_max_sec", 30.0)),
+        order_sync_interval_sec=float(config.get("order_sync_interval_sec", 30.0)),
+        arb_min_samples=int(config.get("arb_min_samples", 25)),
     )
 
     exchange = build_exchange_client(config)
