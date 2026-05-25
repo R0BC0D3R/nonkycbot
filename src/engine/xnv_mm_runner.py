@@ -91,6 +91,7 @@ def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
         cost_basis_scale_range_pct=Decimal(str(config.get("cost_basis_scale_range_pct", "0.20"))),
         cost_basis_min_sell_factor=Decimal(str(config.get("cost_basis_min_sell_factor", "0.20"))),
         cost_basis_max_sell_factor=Decimal(str(config.get("cost_basis_max_sell_factor", "2.0"))),
+        cost_basis_max_spread_factor=Decimal(str(config.get("cost_basis_max_spread_factor", "2.0"))),
         trend_lookback_3m_sec=float(config.get("trend_lookback_3m_sec", 180.0)),
         trend_lookback_15m_sec=float(config.get("trend_lookback_15m_sec", 900.0)),
         trend_lookback_1h_sec=float(config.get("trend_lookback_1h_sec", 3600.0)),

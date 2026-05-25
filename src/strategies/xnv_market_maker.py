@@ -79,6 +79,7 @@ class XnvMarketMakerConfig:
     cost_basis_scale_range_pct: Decimal = field(default_factory=lambda: Decimal("0.20"))
     cost_basis_min_sell_factor: Decimal = field(default_factory=lambda: Decimal("0.20"))
     cost_basis_max_sell_factor: Decimal = field(default_factory=lambda: Decimal("2.0"))
+    cost_basis_max_spread_factor: Decimal = field(default_factory=lambda: Decimal("2.0"))
     # Trend signal internals
     trend_lookback_3m_sec: float = 180.0
     trend_lookback_15m_sec: float = 900.0
@@ -513,18 +514,28 @@ class XnvMarketMakerStrategy:
             if ratio < 0:
                 below_slope = (Decimal("1") - min_f) / scale_range
                 sell_scale = max(min_f, Decimal("1") + ratio * below_slope)
+                # Widen spread when below cost: harder for sells to get hit,
+                # and buys also step back so the bot doesn't accumulate deeper.
+                spread_slope = (self.config.cost_basis_max_spread_factor - Decimal("1")) / scale_range
+                spread_scale = min(
+                    self.config.cost_basis_max_spread_factor,
+                    Decimal("1") + abs(ratio) * spread_slope,
+                )
             else:
                 above_slope = (max_f - Decimal("1")) / scale_range
                 sell_scale = min(max_f, Decimal("1") + ratio * above_slope)
+                spread_scale = Decimal("1")
         else:
             sell_scale = Decimal("1")
+            spread_scale = Decimal("1")
 
         for k in range(self.config.num_levels):
             # Fixed % of mid per level — independent of current spread width.
             # offset_k is the total distance from mid as a fraction of mid.
+            # spread_scale widens both sides when price is below avg cost.
             #   buy_k  = mid * (1 - offset_k) + center_offset
             #   sell_k = mid * (1 + offset_k) + center_offset
-            offset_k = self.config.level_0_offset_pct + k * self.config.level_spacing_pct
+            offset_k = (self.config.level_0_offset_pct + k * self.config.level_spacing_pct) * spread_scale
             buy_raw = mid * (Decimal("1") - offset_k) + center_offset
             sell_raw = mid * (Decimal("1") + offset_k) + center_offset
 

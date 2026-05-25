@@ -117,3 +117,5 @@ arb_min_samples:             25     # Minimum ratio-history samples before arb c
 cost_basis_scale_range_pct: "0.20"   # ±20% price range for full scale effect
 cost_basis_min_sell_factor: "0.20"   # 20% of normal size when 20%+ below cost
 cost_basis_max_sell_factor: "2.0"    # 200% of normal size when 20%+ above cost
+cost_basis_max_spread_factor: "2.0"  # Widen ladder spread up to 2× when 20%+ below cost
+                                     # (same ±range as scale_range_pct applies here too)
