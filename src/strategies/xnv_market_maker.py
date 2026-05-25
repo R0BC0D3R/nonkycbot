@@ -1334,6 +1334,23 @@ class XnvMarketMakerStrategy:
                         self._update_cost_basis(
                             fill_side, fill_qty, Decimal(str(price)) * usdt_ref / xmr_ref
                         )
+                if self.state.avg_cost_xnv > 0:
+                    current_usdt = (
+                        self._current_mids.get(self.config.symbol_usdt, Decimal("0"))
+                        if pair_key == self.config.symbol_xmr
+                        else Decimal(str(price))
+                    )
+                    pnl_pct = (
+                        float((current_usdt - self.state.avg_cost_xnv) / self.state.avg_cost_xnv * 100)
+                        if current_usdt > 0 else 0.0
+                    )
+                    LOGGER.info(
+                        "Cost basis: avg=%.6f  held=%s  current=%.6f  pnl=%+.2f%%",
+                        self.state.avg_cost_xnv,
+                        self.state.held_xnv_qty,
+                        current_usdt,
+                        pnl_pct,
+                    )
 
         self.state.last_trade_ts_ms = max_ts + 1  # +1ms so next poll excludes this trade
 
