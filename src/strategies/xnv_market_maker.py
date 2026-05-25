@@ -607,6 +607,24 @@ class XnvMarketMakerStrategy:
                 "[%s] DRY-RUN place %s L%d qty=%s @ %s", pair, side, level, qty, price
             )
             return
+        if self._balances:
+            if side == "sell":
+                avail = self._balances.get("XNV", (Decimal("0"), Decimal("0")))[0]
+                if avail < qty:
+                    LOGGER.info(
+                        "[%s] Skipping sell L%d: insufficient XNV avail=%s need=%s",
+                        pair, level, avail, qty,
+                    )
+                    return
+            else:
+                quote = pair.split("_")[1]
+                avail = self._balances.get(quote, (Decimal("0"), Decimal("0")))[0]
+                if avail < price * qty:
+                    LOGGER.info(
+                        "[%s] Skipping buy L%d: insufficient %s avail=%s need=%s",
+                        pair, level, quote, avail, price * qty,
+                    )
+                    return
         client_id = f"xnv-mm-{uuid.uuid4().hex[:12]}"
         try:
             order_id = self.client.place_limit(

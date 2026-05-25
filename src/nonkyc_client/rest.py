@@ -168,6 +168,10 @@ class RestClient:
                 delay = exc.retry_after or self._compute_backoff(attempts)
                 time.sleep(delay)
             except TransientApiError:
+                # Never retry non-GET requests — the request may have already
+                # been processed by the exchange (non-idempotent POST/DELETE).
+                if request.method.upper() != "GET":
+                    raise
                 attempts += 1
                 if attempts > self.max_retries:
                     raise
