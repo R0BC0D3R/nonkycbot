@@ -144,6 +144,9 @@ class XnvMarketMakerState:
     arb_last_executed_ts: float = 0.0
     arb_stuck: StuckArb | None = None
     last_trade_ts_ms: int = 0
+    # fill_displaced[pair][side][level] = fill_timestamp
+    # Filled levels are priced at L(num_levels) depth until max_order_age_sec expires.
+    fill_displaced: dict[str, dict[str, dict[int, float]]] = field(default_factory=dict)
 
 
 # ── Strategy ───────────────────────────────────────────────────────────────
@@ -230,6 +233,13 @@ class XnvMarketMakerStrategy:
             arb_last_executed_ts=float(raw.get("arb_last_executed_ts", 0.0)),
             arb_stuck=arb_stuck,
             last_trade_ts_ms=int(raw.get("last_trade_ts_ms", 0)),
+            fill_displaced={
+                pair: {
+                    side: {int(k): float(ts) for k, ts in levels.items()}
+                    for side, levels in sides.items()
+                }
+                for pair, sides in raw.get("fill_displaced", {}).items()
+            },
         )
 
     def save_state(self) -> None:
@@ -269,6 +279,13 @@ class XnvMarketMakerStrategy:
             ],
             "arb_last_executed_ts": self.state.arb_last_executed_ts,
             "last_trade_ts_ms": self.state.last_trade_ts_ms,
+            "fill_displaced": {
+                pair: {
+                    side: {str(k): ts for k, ts in levels.items()}
+                    for side, levels in sides.items()
+                }
+                for pair, sides in self.state.fill_displaced.items()
+            },
             "arb_stuck": (
                 {
                     "pair": self.state.arb_stuck.pair,
@@ -442,7 +459,7 @@ class XnvMarketMakerStrategy:
         max_offset = mid * self.config.level_0_offset_pct * Decimal("0.9")
         center_offset = max(min(center_offset, max_offset), -max_offset)
 
-        desired = self._compute_desired_levels(pair, best_bid, best_ask, center_offset)
+        desired = self._compute_desired_levels(pair, best_bid, best_ask, center_offset, now)
 
         # Step 1: process one pending reprice from queue (one per tick per pair).
         queue = self._reprice_queue.setdefault(pair, deque())
@@ -490,6 +507,7 @@ class XnvMarketMakerStrategy:
         best_bid: Decimal,
         best_ask: Decimal,
         center_offset: Decimal,
+        now: float,
     ) -> dict[tuple[str, int], tuple[Decimal, Decimal]]:
         spread = best_ask - best_bid
         if spread <= 0:
@@ -529,15 +547,25 @@ class XnvMarketMakerStrategy:
             sell_scale = Decimal("1")
             spread_scale = Decimal("1")
 
+        displaced = self.state.fill_displaced.get(pair, {})
         for k in range(self.config.num_levels):
-            # Fixed % of mid per level — independent of current spread width.
-            # offset_k is the total distance from mid as a fraction of mid.
-            # spread_scale widens both sides when price is below avg cost.
-            #   buy_k  = mid * (1 - offset_k) + center_offset
-            #   sell_k = mid * (1 + offset_k) + center_offset
-            offset_k = (self.config.level_0_offset_pct + k * self.config.level_spacing_pct) * spread_scale
-            buy_raw = mid * (Decimal("1") - offset_k) + center_offset
-            sell_raw = mid * (Decimal("1") + offset_k) + center_offset
+            # If this level was recently filled, price it at L(num_levels) depth so
+            # the replacement sits far from mid instead of re-filling immediately.
+            # It returns to normal position once max_order_age_sec has elapsed.
+            buy_k = (
+                self.config.num_levels
+                if now - displaced.get("buy", {}).get(k, 0) < self.config.max_order_age_sec
+                else k
+            )
+            sell_k = (
+                self.config.num_levels
+                if now - displaced.get("sell", {}).get(k, 0) < self.config.max_order_age_sec
+                else k
+            )
+            offset_buy  = (self.config.level_0_offset_pct + buy_k  * self.config.level_spacing_pct) * spread_scale
+            offset_sell = (self.config.level_0_offset_pct + sell_k * self.config.level_spacing_pct) * spread_scale
+            buy_raw  = mid * (Decimal("1") - offset_buy)  + center_offset
+            sell_raw = mid * (Decimal("1") + offset_sell) + center_offset
 
             base_qty = self.config.base_order_size * (
                 Decimal("1") + k * self.config.size_step_factor
@@ -1266,11 +1294,18 @@ class XnvMarketMakerStrategy:
             return
 
         max_ts = self.state.last_trade_ts_ms
+        seen_ids: set[str] = set()
         first = True
         for t in trades:
             ts_ms = t.get("timestamp_ms", 0)
             if ts_ms <= self.state.last_trade_ts_ms:
                 continue  # Already seen (cursor is stored as last seen + 1)
+            trade_id = t.get("trade_id", "")
+            if trade_id and trade_id in seen_ids:
+                LOGGER.debug("Skipping duplicate trade_id=%s in same response", trade_id)
+                continue
+            if trade_id:
+                seen_ids.add(trade_id)
             max_ts = max(max_ts, ts_ms)
             if first:
                 LOGGER.debug("account trade raw sample: %s", t)
@@ -1369,6 +1404,14 @@ class XnvMarketMakerStrategy:
                         to_remove.append((side, k))
                         filled_qty = self._log_fill_status(pair, side, k, order.order_id)
                         self._adjust_exposure_for_ladder_fill(side, filled_qty)
+                        if filled_qty > 0:
+                            ts = time.time()
+                            self.state.fill_displaced.setdefault(pair, {}).setdefault(side, {})[k] = ts
+                            LOGGER.info(
+                                "[%s] %s L%d displaced to L%d depth for %.0fs",
+                                pair, side.upper(), k, self.config.num_levels,
+                                self.config.max_order_age_sec,
+                            )
             for side, k in to_remove:
                 self.state.open_orders.get(pair, {}).get(side, {}).pop(k, None)
 
