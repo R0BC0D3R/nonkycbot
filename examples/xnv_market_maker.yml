@@ -110,6 +110,13 @@ order_sync_interval_sec:     30     # How often the bot reconciles tracked order
 arb_min_samples:             25     # Minimum ratio-history samples before arb can fire;
                                     # prevents arb on a cold/noisy rolling mean at startup
 
+# ── Counter orders ────────────────────────────────────────────────────────────
+# On each confirmed ladder fill, the bot places one counter order in the opposite
+# direction to capture mean reversion. It is cancelled automatically when it ages
+# past max_order_age_sec (same 1-hour clock as ladder reprices).
+counter_order_offset_pct: "0.01"   # Counter price is 1% from the fill price
+counter_order_size_pct:   "0.50"   # Counter qty = 50% of the filled quantity
+
 # ── Cost-basis sell scaling ────────────────────────────────────────────────
 # Ladder sell sizes scale between min/max factor over the ±range below/above avg cost.
 # At avg_cost: 1.0×. At -range: min factor. At +range: max factor.

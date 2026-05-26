@@ -92,6 +92,9 @@ class XnvMarketMakerConfig:
     order_stagger_max_sec: float = 30.0
     order_sync_interval_sec: float = 30.0
     arb_min_samples: int = 25
+    # Counter orders — placed opposite to a fill to capture mean reversion
+    counter_order_offset_pct: Decimal = field(default_factory=lambda: Decimal("0.01"))
+    counter_order_size_pct: Decimal = field(default_factory=lambda: Decimal("0.50"))
 
 
 # ── State ──────────────────────────────────────────────────────────────────
@@ -147,6 +150,8 @@ class XnvMarketMakerState:
     # fill_displaced[pair][side][level] = fill_timestamp
     # Filled levels are priced at L(num_levels) depth until max_order_age_sec expires.
     fill_displaced: dict[str, dict[str, dict[int, float]]] = field(default_factory=dict)
+    # counter_orders[pair][order_id] = created_at — cancelled or removed when filled/aged
+    counter_orders: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 # ── Strategy ───────────────────────────────────────────────────────────────
@@ -240,6 +245,10 @@ class XnvMarketMakerStrategy:
                 }
                 for pair, sides in raw.get("fill_displaced", {}).items()
             },
+            counter_orders={
+                pair: {oid: float(ts) for oid, ts in orders.items()}
+                for pair, orders in raw.get("counter_orders", {}).items()
+            },
         )
 
     def save_state(self) -> None:
@@ -285,6 +294,10 @@ class XnvMarketMakerStrategy:
                     for side, levels in sides.items()
                 }
                 for pair, sides in self.state.fill_displaced.items()
+            },
+            "counter_orders": {
+                pair: {oid: ts for oid, ts in orders.items()}
+                for pair, orders in self.state.counter_orders.items()
             },
             "arb_stuck": (
                 {
@@ -1194,10 +1207,10 @@ class XnvMarketMakerStrategy:
 
     def _log_fill_status(
         self, pair: str, side: str, level: int, order_id: str, context: str = ""
-    ) -> Decimal:
+    ) -> tuple[Decimal, Decimal]:
         """Fetch and log the fill status of an order that has left the book.
 
-        Returns the confirmed filled quantity (0 if unknown or unfilled).
+        Returns (filled_qty, avg_price). Both are 0 if unknown or unfilled.
         """
         try:
             status = self.client.get_order(order_id)
@@ -1210,7 +1223,7 @@ class XnvMarketMakerStrategy:
                     f" ({context})" if context else "",
                     filled, avg, order_id,
                 )
-                return filled
+                return filled, avg or Decimal("0")
             else:
                 LOGGER.info(
                     "[%s] %s L%d %s%s: id=%s",
@@ -1221,7 +1234,7 @@ class XnvMarketMakerStrategy:
                 )
         except RestError as exc:
             LOGGER.debug("Fill check %s: %s", order_id, exc)
-        return Decimal("0")
+        return Decimal("0"), Decimal("0")
 
     def close(self) -> None:
         if self._fills_file is not None:
@@ -1391,29 +1404,107 @@ class XnvMarketMakerStrategy:
 
     def _sync_all_order_statuses(self) -> None:
         """Compare tracked orders against live open orders; log and remove any that filled or disappeared."""
+        now = time.time()
         for pair in (self.config.symbol_usdt, self.config.symbol_xmr):
             try:
                 live_ids = {o.order_id for o in self.client.list_open_orders(pair)}
             except RestError as exc:
                 LOGGER.warning("list_open_orders %s: %s", pair, exc)
                 continue
+
+            # Counter order housekeeping: remove filled/gone orders; cancel aged-out ones.
+            for oid, created_at in list(self.state.counter_orders.get(pair, {}).items()):
+                if oid not in live_ids:
+                    self.state.counter_orders[pair].pop(oid, None)
+                    LOGGER.info("[%s] Counter order %s no longer open — removing", pair, oid)
+                elif now - created_at >= self.config.max_order_age_sec:
+                    try:
+                        self.client.cancel_order(oid)
+                        LOGGER.info("[%s] Counter order %s aged out — cancelled", pair, oid)
+                    except RestError as exc:
+                        LOGGER.warning("[%s] Cancel counter order %s: %s", pair, oid, exc)
+                    self.state.counter_orders.get(pair, {}).pop(oid, None)
+
             to_remove: list[tuple[str, int]] = []
             for side, levels in self.state.open_orders.get(pair, {}).items():
                 for k, order in list(levels.items()):
                     if order.order_id not in live_ids:
                         to_remove.append((side, k))
-                        filled_qty = self._log_fill_status(pair, side, k, order.order_id)
+                        filled_qty, avg_price = self._log_fill_status(pair, side, k, order.order_id)
                         self._adjust_exposure_for_ladder_fill(side, filled_qty)
                         if filled_qty > 0:
-                            ts = time.time()
-                            self.state.fill_displaced.setdefault(pair, {}).setdefault(side, {})[k] = ts
+                            self.state.fill_displaced.setdefault(pair, {}).setdefault(side, {})[k] = now
                             LOGGER.info(
                                 "[%s] %s L%d displaced to L%d depth for %.0fs",
                                 pair, side.upper(), k, self.config.num_levels,
                                 self.config.max_order_age_sec,
                             )
+                            if avg_price > 0:
+                                self._place_counter_order(pair, side, filled_qty, avg_price, now)
             for side, k in to_remove:
                 self.state.open_orders.get(pair, {}).get(side, {}).pop(k, None)
+
+    def _place_counter_order(
+        self,
+        pair: str,
+        fill_side: str,
+        fill_qty: Decimal,
+        fill_price: Decimal,
+        now: float,
+    ) -> None:
+        """Place a counter order opposite to a ladder fill to capture mean reversion."""
+        if self.config.mode in {"monitor", "dry-run"}:
+            return
+        pair_cfg = self.config.pairs.get(pair)
+        if pair_cfg is None:
+            return
+
+        counter_side = "sell" if fill_side == "buy" else "buy"
+        offset = self.config.counter_order_offset_pct
+        if counter_side == "sell":
+            price = _quantize_price(
+                fill_price * (Decimal("1") + offset), pair_cfg.tick_size, side="sell"
+            )
+        else:
+            price = _quantize_price(
+                fill_price * (Decimal("1") - offset), pair_cfg.tick_size, side="buy"
+            )
+
+        qty = _quantize_qty(fill_qty * self.config.counter_order_size_pct, pair_cfg.step_size)
+        if qty <= 0 or price * qty < pair_cfg.min_notional:
+            return
+
+        if self._balances:
+            if counter_side == "sell":
+                avail = self._balances.get("XNV", (Decimal("0"), Decimal("0")))[0]
+                if avail < qty:
+                    LOGGER.info(
+                        "[%s] Counter sell skipped: insufficient XNV avail=%s need=%s",
+                        pair, avail, qty,
+                    )
+                    return
+            else:
+                quote = pair.split("_")[1]
+                avail = self._balances.get(quote, (Decimal("0"), Decimal("0")))[0]
+                if avail < price * qty:
+                    LOGGER.info(
+                        "[%s] Counter buy skipped: insufficient %s avail=%s need=%s",
+                        pair, quote, avail, price * qty,
+                    )
+                    return
+
+        client_id = f"xnv-ctr-{uuid.uuid4().hex[:12]}"
+        try:
+            order_id = self.client.place_limit(
+                pair, counter_side, price, qty, client_id=client_id, strict_validate=False
+            )
+            self.state.counter_orders.setdefault(pair, {})[order_id] = now
+            LOGGER.info(
+                "[%s] Counter %s qty=%s @ %s (fill was %s qty=%s @ %s) id=%s",
+                pair, counter_side, qty, price, fill_side, fill_qty, fill_price, order_id,
+            )
+        except RestError as exc:
+            LOGGER.warning("[%s] Counter order failed: %s", pair, exc)
 
     def _adjust_exposure_for_ladder_fill(self, side: str, filled_qty: Decimal) -> None:
         """Adjust signed exposure when a ladder order fills."""
