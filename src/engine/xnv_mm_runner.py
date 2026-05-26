@@ -122,7 +122,7 @@ def run_xnv_mm(config: dict, state_path: Path) -> None:
         strategy.config.symbol_usdt, strategy.config.symbol_xmr,
         strategy.config.num_levels, strategy.config.poll_interval_sec,
         strategy.config.mode, strategy.state.trend_exposure_xnv,
-        strategy.state.avg_cost_xnv or "unset",
+        f"{strategy.state.avg_cost_xnv:.4f}" if strategy.state.avg_cost_xnv else "unset",
         strategy.state.held_xnv_qty,
     )
 
