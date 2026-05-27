@@ -104,6 +104,7 @@ def build_strategy(config: dict, state_path: Path) -> XnvMarketMakerStrategy:
         arb_min_samples=int(config.get("arb_min_samples", 25)),
         counter_order_offset_pct=Decimal(str(config.get("counter_order_offset_pct", "0.01"))),
         counter_order_size_pct=Decimal(str(config.get("counter_order_size_pct", "0.50"))),
+        counter_order_max_age_sec=float(config.get("counter_order_max_age_sec", 3600.0)),
     )
 
     exchange = build_exchange_client(config)

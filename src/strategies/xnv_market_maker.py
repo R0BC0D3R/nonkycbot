@@ -95,6 +95,7 @@ class XnvMarketMakerConfig:
     # Counter orders — placed opposite to a fill to capture mean reversion
     counter_order_offset_pct: Decimal = field(default_factory=lambda: Decimal("0.01"))
     counter_order_size_pct: Decimal = field(default_factory=lambda: Decimal("0.50"))
+    counter_order_max_age_sec: float = 3600.0
 
 
 # ── State ──────────────────────────────────────────────────────────────────
@@ -1417,7 +1418,7 @@ class XnvMarketMakerStrategy:
                 if oid not in live_ids:
                     self.state.counter_orders[pair].pop(oid, None)
                     LOGGER.info("[%s] Counter order %s no longer open — removing", pair, oid)
-                elif now - created_at >= self.config.max_order_age_sec:
+                elif now - created_at >= self.config.counter_order_max_age_sec:
                     try:
                         self.client.cancel_order(oid)
                         LOGGER.info("[%s] Counter order %s aged out — cancelled", pair, oid)
