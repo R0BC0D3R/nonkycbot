@@ -175,6 +175,8 @@ class XnvMarketMakerStrategy:
         self._balances: dict[str, tuple[Decimal, Decimal]] = {}
         # (pair, side, level) -> timestamp of last insufficient-funds failure
         self._insuf_funds_ts: dict[tuple[str, str, int], float] = {}
+        # (pair, side, level) -> timestamp of last step-3 cancel (crossed book / out of desired)
+        self._step3_cancel_ts: dict[tuple[str, str, int], float] = {}
         self._current_mids: dict[str, Decimal] = {}
         # pair -> deque of (side, level_index) pending reprice; one processed per tick
         self._reprice_queue: dict[str, deque[tuple[str, int]]] = {}
@@ -500,6 +502,9 @@ class XnvMarketMakerStrategy:
                 continue  # Still in cooldown after insufficient-funds failure
             current = existing.get(side, {}).get(k)
             if current is None:
+                cancel_ts = self._step3_cancel_ts.get((pair, side, k), 0.0)
+                if now - cancel_ts < self.config.poll_interval_sec:
+                    continue  # Skip one poll after a step-3 cancel to prevent oscillation
                 self._place_level(pair, side, k, desired_price, desired_qty)
             elif self._level_needs_replace(
                 current, desired_price, pair, now, side, best_bid, best_ask
@@ -513,6 +518,7 @@ class XnvMarketMakerStrategy:
             for k in list(existing.get(side, {}).keys()):
                 if (side, k) not in desired:
                     self._cancel_level(pair, side, k, existing[side][k])
+                    self._step3_cancel_ts[(pair, side, k)] = now
 
 
     def _compute_desired_levels(
