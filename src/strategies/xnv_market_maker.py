@@ -602,19 +602,23 @@ class XnvMarketMakerStrategy:
             buy_price = _quantize_price(buy_raw, pair_cfg.tick_size, side="buy")
             sell_price = _quantize_price(sell_raw, pair_cfg.tick_size, side="sell")
 
-            if (
-                buy_price > 0
-                and buy_price < best_ask
-                and buy_price * buy_qty >= pair_cfg.min_notional
-            ):
-                result[("buy", k)] = (buy_price, buy_qty)
+            if buy_price > 0 and buy_price < best_ask:
+                if buy_price * buy_qty < pair_cfg.min_notional:
+                    if buy_price * buy_qty >= pair_cfg.min_notional * Decimal("0.50"):
+                        buy_qty = (
+                            pair_cfg.min_notional / buy_price / pair_cfg.step_size
+                        ).to_integral_value(rounding=ROUND_UP) * pair_cfg.step_size
+                if buy_price * buy_qty >= pair_cfg.min_notional:
+                    result[("buy", k)] = (buy_price, buy_qty)
 
-            if (
-                sell_price > 0
-                and sell_price >= best_bid
-                and sell_price * sell_qty >= pair_cfg.min_notional
-            ):
-                result[("sell", k)] = (sell_price, sell_qty)
+            if sell_price > 0 and sell_price >= best_bid:
+                if sell_price * sell_qty < pair_cfg.min_notional:
+                    if sell_price * sell_qty >= pair_cfg.min_notional * Decimal("0.50"):
+                        sell_qty = (
+                            pair_cfg.min_notional / sell_price / pair_cfg.step_size
+                        ).to_integral_value(rounding=ROUND_UP) * pair_cfg.step_size
+                if sell_price * sell_qty >= pair_cfg.min_notional:
+                    result[("sell", k)] = (sell_price, sell_qty)
 
         return result
 
@@ -1007,7 +1011,7 @@ class XnvMarketMakerStrategy:
             profit_pct = usdt_bid / (xmr_ask * mean) - Decimal("1") - total_fees
             if profit_pct < self.config.arb_min_profit_pct:
                 return False
-            size = self._arb_size(usdt_bid_qty, xmr_ask_qty, xmr_ask)
+            size = self._arb_size(usdt_bid_qty, xmr_ask_qty, xmr_ask, usdt_bid)
             if size <= 0:
                 return False
             LOGGER.info(
@@ -1023,7 +1027,7 @@ class XnvMarketMakerStrategy:
             profit_pct = xmr_bid * mean / usdt_ask - Decimal("1") - total_fees
             if profit_pct < self.config.arb_min_profit_pct:
                 return False
-            size = self._arb_size(usdt_ask_qty, xmr_bid_qty, xmr_bid)
+            size = self._arb_size(usdt_ask_qty, xmr_bid_qty, xmr_bid, usdt_ask)
             if size <= 0:
                 return False
             LOGGER.info(
@@ -1034,7 +1038,7 @@ class XnvMarketMakerStrategy:
 
         return False
 
-    def _arb_size(self, qty1: Decimal, qty2: Decimal, xmr_price: Decimal) -> Decimal:
+    def _arb_size(self, qty1: Decimal, qty2: Decimal, xmr_price: Decimal, usdt_price: Decimal) -> Decimal:
         step = self.config.pairs[self.config.symbol_usdt].step_size
         size = min(
             self.config.arb_max_order_size,
@@ -1047,6 +1051,11 @@ class XnvMarketMakerStrategy:
         if xmr_min > 0 and xmr_price > 0:
             min_xnv = (xmr_min / xmr_price / step).to_integral_value(rounding=ROUND_UP) * step
             size = max(size, min_xnv)
+        # Enforce USDT leg minimum notional: bump up if below exchange floor
+        usdt_min = self.config.pairs[self.config.symbol_usdt].min_notional
+        if usdt_min > 0 and usdt_price > 0:
+            min_xnv_usdt = (usdt_min / usdt_price / step).to_integral_value(rounding=ROUND_UP) * step
+            size = max(size, min_xnv_usdt)
         if size > self.config.arb_max_order_size:
             return Decimal("0")
         return max(Decimal("0"), size)
