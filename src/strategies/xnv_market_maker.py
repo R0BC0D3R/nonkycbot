@@ -617,14 +617,22 @@ class XnvMarketMakerStrategy:
                 if buy_price * buy_qty >= pair_cfg.min_notional:
                     result[("buy", k)] = (buy_price, buy_qty)
 
-            if sell_price > 0 and sell_price >= best_bid:
-                if sell_price * sell_qty < pair_cfg.min_notional:
-                    if sell_price * sell_qty >= pair_cfg.min_notional * Decimal("0.50"):
-                        sell_qty = (
-                            pair_cfg.min_notional / sell_price / pair_cfg.step_size
-                        ).to_integral_value(rounding=ROUND_UP) * pair_cfg.step_size
-                if sell_price * sell_qty >= pair_cfg.min_notional:
-                    result[("sell", k)] = (sell_price, sell_qty)
+            if sell_price > 0:
+                # If ideal price crossed the bid, clamp to bid+tick so the level
+                # stays in 'desired' and isn't cancelled/re-placed every poll.
+                # Large moves (>level_reprice_threshold_pct) are caught by drift check.
+                if sell_price < best_bid:
+                    sell_price = _quantize_price(
+                        best_bid + pair_cfg.tick_size, pair_cfg.tick_size, side="sell"
+                    )
+                if sell_price < best_ask:
+                    if sell_price * sell_qty < pair_cfg.min_notional:
+                        if sell_price * sell_qty >= pair_cfg.min_notional * Decimal("0.50"):
+                            sell_qty = (
+                                pair_cfg.min_notional / sell_price / pair_cfg.step_size
+                            ).to_integral_value(rounding=ROUND_UP) * pair_cfg.step_size
+                    if sell_price * sell_qty >= pair_cfg.min_notional:
+                        result[("sell", k)] = (sell_price, sell_qty)
 
         return result
 
