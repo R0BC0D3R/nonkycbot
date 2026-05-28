@@ -625,14 +625,13 @@ class XnvMarketMakerStrategy:
                     sell_price = _quantize_price(
                         best_bid + pair_cfg.tick_size, pair_cfg.tick_size, side="sell"
                     )
-                if sell_price < best_ask:
-                    if sell_price * sell_qty < pair_cfg.min_notional:
-                        if sell_price * sell_qty >= pair_cfg.min_notional * Decimal("0.50"):
-                            sell_qty = (
-                                pair_cfg.min_notional / sell_price / pair_cfg.step_size
-                            ).to_integral_value(rounding=ROUND_UP) * pair_cfg.step_size
-                    if sell_price * sell_qty >= pair_cfg.min_notional:
-                        result[("sell", k)] = (sell_price, sell_qty)
+                if sell_price * sell_qty < pair_cfg.min_notional:
+                    if sell_price * sell_qty >= pair_cfg.min_notional * Decimal("0.50"):
+                        sell_qty = (
+                            pair_cfg.min_notional / sell_price / pair_cfg.step_size
+                        ).to_integral_value(rounding=ROUND_UP) * pair_cfg.step_size
+                if sell_price * sell_qty >= pair_cfg.min_notional:
+                    result[("sell", k)] = (sell_price, sell_qty)
 
         return result
 
