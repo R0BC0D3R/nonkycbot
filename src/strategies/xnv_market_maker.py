@@ -618,13 +618,17 @@ class XnvMarketMakerStrategy:
                     result[("buy", k)] = (buy_price, buy_qty)
 
             if sell_price > 0:
-                # If ideal price crossed the bid, clamp to bid+tick so the level
-                # stays in 'desired' and isn't cancelled/re-placed every poll.
-                # Large moves (>level_reprice_threshold_pct) are caught by drift check.
                 if sell_price < best_bid:
-                    sell_price = _quantize_price(
-                        best_bid + pair_cfg.tick_size, pair_cfg.tick_size, side="sell"
-                    )
+                    # Only clamp to bid+tick for small crossings (within one L0 offset).
+                    # Larger crossings mean the market moved significantly — skip the
+                    # level so we don't bundle all sells at the same price after a pump.
+                    clamp_limit = best_bid * self.config.level_0_offset_pct * spread_scale
+                    if best_bid - sell_price <= clamp_limit:
+                        sell_price = _quantize_price(
+                            best_bid + pair_cfg.tick_size, pair_cfg.tick_size, side="sell"
+                        )
+                    else:
+                        continue  # Market moved up significantly; skip, reprice will catch it
                 if sell_price * sell_qty < pair_cfg.min_notional:
                     if sell_price * sell_qty >= pair_cfg.min_notional * Decimal("0.50"):
                         sell_qty = (
