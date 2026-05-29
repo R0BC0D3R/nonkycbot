@@ -569,16 +569,18 @@ class XnvMarketMakerStrategy:
 
         displaced = self.state.fill_displaced.get(pair, {})
         for k in range(self.config.num_levels):
-            # If this level was recently filled, price it at L(num_levels) depth so
+            # If this level was recently filled, price it at L(num_levels+k) depth so
             # the replacement sits far from mid instead of re-filling immediately.
+            # Using num_levels+k gives each level a unique displaced price so multiple
+            # fills don't stack all replacement orders at the same price.
             # It returns to normal position once max_order_age_sec has elapsed.
             buy_k = (
-                self.config.num_levels
+                self.config.num_levels + k
                 if now - displaced.get("buy", {}).get(k, 0) < self.config.max_order_age_sec
                 else k
             )
             sell_k = (
-                self.config.num_levels
+                self.config.num_levels + k
                 if now - displaced.get("sell", {}).get(k, 0) < self.config.max_order_age_sec
                 else k
             )
