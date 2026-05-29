@@ -567,6 +567,19 @@ class XnvMarketMakerStrategy:
             sell_scale = Decimal("1")
             spread_scale = Decimal("1")
 
+        # Cap total desired sell qty to XNV holdings split proportionally across pairs.
+        # Prevents placing more sell orders than the bot actually holds.
+        xnv_total = self._balances.get("XNV", (Decimal("0"), Decimal("0")))[1]
+        frac = self.config.xmr_qty_fraction
+        if xnv_total > 0:
+            if pair == self.config.symbol_usdt:
+                sell_budget = xnv_total / (Decimal("1") + frac)
+            else:
+                sell_budget = xnv_total * frac / (Decimal("1") + frac)
+        else:
+            sell_budget = Decimal("0")  # no balance data yet — skip cap
+        sell_committed = Decimal("0")
+
         displaced = self.state.fill_displaced.get(pair, {})
         for k in range(self.config.num_levels):
             # If this level was recently filled, price it at L(num_levels+k) depth so
@@ -631,6 +644,12 @@ class XnvMarketMakerStrategy:
                         )
                     else:
                         continue  # Market moved up significantly; skip, reprice will catch it
+                # Balance cap: don't commit more XNV to sells than the budget allows
+                if sell_budget > 0:
+                    remaining = sell_budget - sell_committed
+                    if remaining <= 0:
+                        continue  # Budget exhausted; skip remaining sell levels
+                    sell_qty = min(sell_qty, _quantize_qty(remaining, pair_cfg.step_size))
                 if sell_price * sell_qty < pair_cfg.min_notional:
                     if sell_price * sell_qty >= pair_cfg.min_notional * Decimal("0.50"):
                         sell_qty = (
@@ -638,6 +657,7 @@ class XnvMarketMakerStrategy:
                         ).to_integral_value(rounding=ROUND_UP) * pair_cfg.step_size
                 if sell_price * sell_qty >= pair_cfg.min_notional:
                     result[("sell", k)] = (sell_price, sell_qty)
+                    sell_committed += sell_qty
 
         return result
 
