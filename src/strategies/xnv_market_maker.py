@@ -40,7 +40,7 @@ class XnvMarketMakerConfig:
     symbol_usdt: str
     symbol_xmr: str
     # Ladder
-    base_order_size: Decimal
+    base_order_size: Decimal  # USDT notional per L0 order (qty = notional / current_price)
     num_levels: int
     level_0_offset_pct: Decimal  # Distance of L0 from mid as fraction of mid
     level_spacing_pct: Decimal   # Additional distance per level as fraction of mid
@@ -59,7 +59,7 @@ class XnvMarketMakerConfig:
     ladder_shift_pct: Decimal
     taker_bite_size_factor: Decimal
     taker_bite_interval_sec: float
-    taker_max_exposure: Decimal  # Multiples of base_order_size
+    taker_max_exposure: Decimal  # Max taker exposure in multiples of (base_order_size / current_price) XNV
     xmr_qty_fraction: Decimal  # XNV_XMR order size as fraction of USDT size
     order_size_jitter_pct: Decimal  # ±fraction applied to each order qty
     # Arb
@@ -602,9 +602,17 @@ class XnvMarketMakerStrategy:
             buy_raw  = mid * (Decimal("1") - offset_buy)  + center_offset
             sell_raw = mid * (Decimal("1") + offset_sell) + center_offset
 
-            base_qty = self.config.base_order_size * (
-                Decimal("1") + k * self.config.size_step_factor
-            )
+            # base_order_size is a USDT notional — convert to XNV qty at current price
+            # so order sizes stay constant in USD terms as XNV price changes.
+            usdt_mid = mid if pair == self.config.symbol_usdt else usdt_ref
+            if usdt_mid > 0:
+                base_qty = (self.config.base_order_size / usdt_mid) * (
+                    Decimal("1") + k * self.config.size_step_factor
+                )
+            else:
+                base_qty = self.config.base_order_size * (
+                    Decimal("1") + k * self.config.size_step_factor
+                )
             if pair == self.config.symbol_xmr:
                 base_qty *= self.config.xmr_qty_fraction
 
@@ -918,7 +926,13 @@ class XnvMarketMakerStrategy:
         if now - self.state.last_bite_ts < self.config.taker_bite_interval_sec:
             return
 
-        max_exp = self.config.taker_max_exposure * self.config.base_order_size
+        usdt_mid = (best_bid + best_ask) / Decimal("2")
+        base_xnv = (
+            self.config.base_order_size / usdt_mid
+            if usdt_mid > 0
+            else self.config.base_order_size
+        )
+        max_exp = self.config.taker_max_exposure * base_xnv
         # Signed exposure: negative = net short, positive = net long.
         # Block deepening in the current trend direction; unwinding is always allowed.
         exp = self.state.trend_exposure_xnv
@@ -935,7 +949,7 @@ class XnvMarketMakerStrategy:
             float(1 + self.config.order_size_jitter_pct),
         )))
         bite_qty = _quantize_qty(
-            self.config.taker_bite_size_factor * self.config.base_order_size * jitter,
+            self.config.taker_bite_size_factor * base_xnv * jitter,
             pair_cfg.step_size,
         )
         if bite_qty <= 0:

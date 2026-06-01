@@ -29,7 +29,7 @@ pairs:
     min_notional: "0.0022"     # Exchange minimum ~0.002198 XMR
 
 # ── Ladder ────────────────────────────────────────────────────────────────
-base_order_size: "50"          # XNV per level-0 order (USDT pair)
+base_order_size: "50"          # USDT notional per L0 order; XNV qty = notional / current_price
 num_levels: 5
 level_0_offset_pct: "0.003"   # L0 distance from mid = 0.3% of mid price
 level_spacing_pct:  "0.015"   # Each deeper level adds 1.5% of mid (~27 ticks apart)
