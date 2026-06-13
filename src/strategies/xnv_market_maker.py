@@ -579,6 +579,7 @@ class XnvMarketMakerStrategy:
         else:
             sell_budget = Decimal("0")  # no balance data yet — skip cap
         sell_committed = Decimal("0")
+        buy_scale = self._inventory_buy_scale()
 
         displaced = self.state.fill_displaced.get(pair, {})
         for k in range(self.config.num_levels):
@@ -623,7 +624,7 @@ class XnvMarketMakerStrategy:
                 )))
                 return _quantize_qty(q * j, pair_cfg.step_size)
 
-            buy_qty = _jittered(base_qty)
+            buy_qty = _jittered(base_qty * buy_scale)
             sell_qty = _jittered(base_qty * sell_scale)
             if buy_qty <= 0 or sell_qty <= 0:
                 continue
@@ -1226,27 +1227,31 @@ class XnvMarketMakerStrategy:
 
     # ── Inventory skew ─────────────────────────────────────────────────────
 
+    def _xnv_inventory_ratio(self) -> Decimal:
+        """XNV as fraction of total portfolio value, using total holdings (available + held)."""
+        if not self._balances:
+            return Decimal("0")
+        xnv_total  = sum(self._balances.get("XNV",  (Decimal("0"), Decimal("0"))))
+        usdt_total = sum(self._balances.get("USDT", (Decimal("0"), Decimal("0"))))
+        xmr_total  = sum(self._balances.get("XMR",  (Decimal("0"), Decimal("0"))))
+        usdt_mid  = self._current_mids.get(self.config.symbol_usdt, Decimal("0"))
+        xmr_mid_c = self._current_mids.get(self.config.symbol_xmr, Decimal("0"))
+        if usdt_mid <= 0:
+            return Decimal("0")
+        implied_xmr_usdt = (usdt_mid / xmr_mid_c) if xmr_mid_c > 0 else Decimal("0")
+        total = xnv_total * usdt_mid + usdt_total + xmr_total * implied_xmr_usdt
+        if total <= 0:
+            return Decimal("0")
+        return xnv_total * usdt_mid / total
+
     def _inventory_skew(self, pair: str, mid: Decimal) -> Decimal:
         if not self._balances or mid <= 0:
             return Decimal("0")
 
-        xnv_bal = self._balances.get("XNV", (Decimal("0"), Decimal("0")))[0]
-        usdt_bal = self._balances.get("USDT", (Decimal("0"), Decimal("0")))[0]
-        xmr_bal = self._balances.get("XMR", (Decimal("0"), Decimal("0")))[0]
-
-        usdt_mid = self._current_mids.get(self.config.symbol_usdt, Decimal("0"))
-        xmr_mid_c = self._current_mids.get(self.config.symbol_xmr, Decimal("0"))
-
-        if usdt_mid <= 0:
+        xnv_ratio = self._xnv_inventory_ratio()
+        if xnv_ratio <= 0:
             return Decimal("0")
 
-        implied_xmr_usdt = (usdt_mid / xmr_mid_c) if xmr_mid_c > 0 else Decimal("0")
-
-        total = xnv_bal * usdt_mid + usdt_bal + xmr_bal * implied_xmr_usdt
-        if total <= 0:
-            return Decimal("0")
-
-        xnv_ratio = xnv_bal * usdt_mid / total
         target = self.config.inventory_target.get("XNV", Decimal("0.5"))
         diff = xnv_ratio - target
 
@@ -1254,8 +1259,36 @@ class XnvMarketMakerStrategy:
         if abs(diff) <= tol:
             return Decimal("0")
 
-        factor = max(min(diff / tol, Decimal("1")), Decimal("-1"))
-        return mid * self.config.inventory_skew_pct * factor
+        # Quadratic factor so large deviations produce a bigger price shift.
+        # Still clamped by max_offset in _run_ladder, but the direction is correct.
+        normalized = diff / tol
+        factor = normalized * abs(normalized)
+        factor = max(min(factor, Decimal("10")), Decimal("-10"))
+        return -mid * self.config.inventory_skew_pct * factor
+
+    def _inventory_buy_scale(self) -> Decimal:
+        """Buy-order size multiplier [0, 1] based on how far XNV exceeds inventory target.
+
+        Uses total XNV holdings (available + held in sell orders) so the ratio accurately
+        reflects the full portfolio, not just the free balance.
+
+        Quadratic decay: 1.0× when on-target, approaches 0 when deeply overweight.
+          excess=1 → 0.50×   (XNV 5 pp above tol boundary)
+          excess=2 → 0.20×   (10 pp above)
+          excess=3 → 0.10×   (15 pp above)
+          excess=4.5 → 0.05× (22+ pp above — current situation)
+        """
+        if not self._balances:
+            return Decimal("1")
+        xnv_ratio = self._xnv_inventory_ratio()
+        if xnv_ratio <= 0:
+            return Decimal("1")
+        target = self.config.inventory_target.get("XNV", Decimal("0.5"))
+        tol = max(self.config.inventory_tolerance_pct, Decimal("0.0001"))
+        excess = (xnv_ratio - target - tol) / tol
+        if excess <= Decimal("0"):
+            return Decimal("1")
+        return Decimal("1") / (Decimal("1") + excess * excess)
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
